@@ -25,6 +25,9 @@ Supports four roles:
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&dataDir, "data-dir", "", "Data directory for keys and state (default: ~/.lattice-gs)")
+	rootCmd.PersistentFlags().Bool("quiet", false, "Suppress non-essential output")
+	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug logging for troubleshooting")
+	rootCmd.PersistentFlags().String("log-file", "", "Write logs to file instead of stdout")
 }
 
 // Execute runs the root command

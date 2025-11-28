@@ -11,15 +11,51 @@ import (
 var gmCmd = &cobra.Command{
 	Use:   "gm",
 	Short: "Group Manager commands",
-	Long:  "Commands for the Group Manager to manage group membership",
+	Long: `Group Manager (GM) commands for managing group membership and system setup.
+
+The GM is responsible for:
+  - Initial system setup (GSetup, GKgenGM, GKgenTM)
+  - Issuing certificates to new members (Issue protocol)
+  - Revoking members from the group (GUpdate protocol)
+  - Maintaining the Merkle tree of active members
+  - Managing group state and epoch transitions
+
+Available commands:
+  setup   - Initialize the entire group signature system
+  issue   - Add a new member to the group
+  update  - Revoke members and update group state
+  list    - View current group membership`,
 }
 
 var gmSetupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Initialize the group signature system (GSetup)",
-	Long: `Runs the GSetup algorithm from the paper.
-Generates public parameters and initializes both GM and TM key pairs.
-This must be run first before any other operations.`,
+	Long: `Initialize the group signature system by running GSetup algorithm.
+
+This command performs:
+  1. GSetup: Generate public parameters (pp) based on security parameter λ
+  2. GKgenGM: Generate Group Manager key pair (mpk, msk)
+  3. GKgenTM: Generate Tracing Manager key pair (tpk, tsk)
+  4. Initialize empty Merkle tree with N leaves (max users)
+  5. Initialize group state at epoch 0
+  6. Save all keys and parameters to persistent storage
+
+Parameters:
+  --lambda: Security parameter in bits (default: 128)
+    - Controls lattice dimension and SIS/LWE hardness
+    - Higher values = more security but larger keys/signatures
+  
+  --max-users: Maximum group size N, must be power of 2 (default: 16)
+    - Determines Merkle tree height (log N)
+    - Affects signature size: O(λ·log N)
+  
+  --force: Force reinitialize even if system exists
+    - WARNING: Destroys all existing keys and signatures!
+
+Example:
+  lattice-gs gm setup --lambda=128 --max-users=32
+
+This must be run before any other operations.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		lambda, _ := cmd.Flags().GetInt("lambda")
 		maxUsers, _ := cmd.Flags().GetInt("max-users")
@@ -104,11 +140,31 @@ This must be run first before any other operations.`,
 }
 
 var gmIssueCmd = &cobra.Command{
-	Use:   "issue [uid]",
+	Use:   "issue <uid>",
 	Short: "Issue certificate to a user (Issue protocol)",
-	Long: `Runs the Issue algorithm from the paper.
-The GM accepts a user's join request and adds them to the group.
-The user must have already generated their keys and credentials.`,
+	Long: `Issue a membership certificate to a user, adding them to the group.
+
+The Issue protocol:
+  1. Verify user has generated keys (upk, x, pi) via 'member keygen'
+  2. Validate user's public credential: pi = A * x (mod q)
+  3. Add user's public credential to Merkle tree at leaf index uid
+  4. Update Merkle tree root hash
+  5. Increment group epoch counter
+  6. Save updated group state and registry
+
+Prerequisites:
+  - System must be initialized ('gm setup')
+  - User must have run 'member keygen <uid>' first
+
+Flags:
+  --auto-approve: Skip confirmation prompt (default: true)
+  --verbose: Show detailed protocol steps
+
+Example:
+  lattice-gs gm issue 5
+  lattice-gs gm issue 5 --verbose
+
+After issuance, the user can sign messages anonymously.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		uid := 0
@@ -182,10 +238,34 @@ The user must have already generated their keys and credentials.`,
 
 var gmUpdateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update group (revoke users) - GUpdate algorithm",
-	Long: `Runs the GUpdate algorithm from the paper.
-Revokes specified users from the group by setting their leaves to 0 in the Merkle tree.
-This demonstrates the full dynamicity feature.`,
+	Short: "Update group state by revoking users (GUpdate)",
+	Long: `Update the group by revoking specified users (GUpdate algorithm).
+
+The GUpdate protocol:
+  1. Identify users to revoke from --revoke flag
+  2. Set revoked users' Merkle tree leaves to 0
+  3. Recompute Merkle tree root hash
+  4. Increment group epoch
+  5. Update active user registry
+  6. Save new group state
+
+Revoked users:
+  - Cannot create new valid signatures
+  - Old signatures remain valid (non-repudiation)
+  - Are removed from active member list
+  - Can potentially rejoin later (via new 'issue')
+
+Flags:
+  --revoke: Comma-separated list of UIDs (REQUIRED)
+  --confirm: Require confirmation (default: true)
+  --verbose: Show detailed update steps
+
+Examples:
+  lattice-gs gm update --revoke=3,5,7
+  lattice-gs gm update --revoke=1 --verbose
+  lattice-gs gm update --revoke=2,4,6 --confirm=false
+
+This demonstrates the full dynamicity feature of the scheme.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		revokeUIDs, _ := cmd.Flags().GetIntSlice("revoke")
 
@@ -262,8 +342,29 @@ This demonstrates the full dynamicity feature.`,
 
 var gmListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List group members",
-	Long:  "Shows current group state, active members, and epoch information.",
+	Short: "List all group members and their status",
+	Long: `Display current group membership, state, and statistics.
+
+Shows:
+  - Current epoch number
+  - Merkle tree root hash
+  - Total registered users
+  - Active members (can sign)
+  - Revoked members (cannot sign)
+  - Member-specific information (with --show-keys)
+
+Flags:
+  --show-revoked: Include revoked members (default: true)
+  --show-keys: Display public key hashes (default: false)
+  --format: Output format - table, json, or csv (default: table)
+
+Examples:
+  lattice-gs gm list
+  lattice-gs gm list --show-keys
+  lattice-gs gm list --format=json
+  lattice-gs gm list --show-revoked=false
+
+Useful for monitoring group state and membership changes.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("=== Group Manager: List Members ===")
 
@@ -327,12 +428,24 @@ func init() {
 	rootCmd.AddCommand(gmCmd)
 
 	// Setup command flags
-	gmSetupCmd.Flags().Int("lambda", 128, "Security parameter")
-	gmSetupCmd.Flags().Int("max-users", 16, "Maximum number of users (power of 2)")
+	gmSetupCmd.Flags().Int("lambda", 128, "Security parameter λ (bits) - affects lattice dimensions and proof size")
+	gmSetupCmd.Flags().Int("max-users", 16, "Maximum number of users N (must be power of 2) - determines Merkle tree height")
+	gmSetupCmd.Flags().Bool("force", false, "Force reinitialize even if system already exists")
+
+	// Issue command flags
+	gmIssueCmd.Flags().Bool("auto-approve", true, "Automatically approve join request without manual confirmation")
+	gmIssueCmd.Flags().Bool("verbose", false, "Show detailed issue protocol steps")
 
 	// Update command flags
-	gmUpdateCmd.Flags().IntSlice("revoke", []int{}, "User IDs to revoke (comma-separated)")
+	gmUpdateCmd.Flags().IntSlice("revoke", []int{}, "User IDs to revoke (comma-separated, e.g., --revoke=1,3,5)")
+	gmUpdateCmd.Flags().Bool("confirm", true, "Require confirmation before revoking users")
+	gmUpdateCmd.Flags().Bool("verbose", false, "Show detailed update protocol steps")
 	gmUpdateCmd.MarkFlagRequired("revoke")
+
+	// List command flags
+	gmListCmd.Flags().Bool("show-revoked", true, "Include revoked members in the list")
+	gmListCmd.Flags().Bool("show-keys", false, "Display public key information for each member")
+	gmListCmd.Flags().String("format", "table", "Output format: table, json, or csv")
 
 	gmCmd.AddCommand(gmSetupCmd)
 	gmCmd.AddCommand(gmIssueCmd)
