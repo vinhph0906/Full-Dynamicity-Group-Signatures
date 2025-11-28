@@ -1,0 +1,93 @@
+# Binaries
+lattice-gs
+lattice-group-signature
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+*.aux
+*.toc
+*.blg 
+*.bbl
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.nav
+*.snm
+*.lof
+*.lot
+report/main.pdf
+
+
+# Build artifacts
+bin/
+build/
+dist/
+
+# Data and storage directories
+*.lattice-gs/
+.lattice-gs/
+data/
+
+# Test data
+/tmp/lattice-gs-*/
+
+# Keys and sensitive data
+*_keys.json
+*_key.json
+*.key
+*.pem
+private_*.json
+secret_*.json
+
+# Signatures and proofs
+sig_*.json
+trace_*.json
+proof_*.json
+
+# Group data
+public_params.json
+group_info.json
+registry.json
+user_*_keys.json
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
