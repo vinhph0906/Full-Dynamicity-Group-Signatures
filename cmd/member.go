@@ -72,7 +72,19 @@ Next steps:
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		uid := 0
-		fmt.Sscanf(args[0], "%d", &uid)
+		n, err := fmt.Sscanf(args[0], "%d", &uid)
+		if err != nil || n != 1 {
+			fmt.Printf("Error: Invalid user ID '%s'. Must be a positive integer.\n", args[0])
+			os.Exit(1)
+		}
+		if uid < 0 {
+			fmt.Printf("Error: User ID must be non-negative (got %d)\n", uid)
+			os.Exit(1)
+		}
+
+		force, _ := cmd.Flags().GetBool("force")
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		outputPath, _ := cmd.Flags().GetString("output")
 
 		fmt.Println("=== Member: Generate Keys ===")
 		fmt.Printf("User ID: %d\n", uid)
@@ -105,18 +117,41 @@ Next steps:
 		info, err := store.LoadGroupInfo()
 		if err != nil {
 			fmt.Printf("Error loading group info: %v\n", err)
-			return
+			os.Exit(1)
+		}
+
+		// Check if UID is within bounds
+		if uid >= pp.N {
+			fmt.Printf("Error: User ID %d exceeds maximum allowed (%d)\n", uid, pp.N-1)
+			fmt.Printf("Valid range: 0-%d\n", pp.N-1)
+			os.Exit(1)
+		}
+
+		// Check if keys already exist
+		if _, err := store.LoadUserKeys(uid); err == nil {
+			if !force {
+				fmt.Printf("Error: Keys already exist for User %d\n", uid)
+				fmt.Println("Use --force flag to regenerate (WARNING: old keys will be lost)")
+				os.Exit(1)
+			}
+			fmt.Printf("Warning: Force flag detected. Regenerating keys for User %d...\n", uid)
 		}
 
 		// Step 1: UKgen - Generate user key pair
-		fmt.Println("\n1. Running UKgen (generating user key pair)...")
+		if verbose {
+			fmt.Println("\n1. Running UKgen (generating user key pair - detailed)...")
+			fmt.Printf("   Generating secret key usk in Z_q^m where m=%d, q=%d\n", pp.M, pp.Q)
+			fmt.Println("   Computing public key upk...")
+		} else {
+			fmt.Println("\n1. Running UKgen (generating user key pair)...")
+		}
 		upk, usk, err := scheme.UKgen(pp)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 			return
 		}
-		fmt.Println("   ✓ User key pair generated")
+		fmt.Println("   [OK] User key pair generated")
 
 		// Step 2: Join - Generate credentials
 		fmt.Println("\n2. Running Join protocol (generating credentials)...")
@@ -126,17 +161,29 @@ Next steps:
 			return
 		}
 		gsk.UID = uid
-		fmt.Println("   ✓ Credentials generated")
-		fmt.Println("   ✓ Secret credential x_i")
-		fmt.Println("   ✓ Public credential pi = A * x_i")
+		fmt.Println("   [OK] Credentials generated")
+		fmt.Println("   [OK] Secret credential x_i")
+		fmt.Println("   [OK] Public credential pi = A * x_i")
 
 		// Save user keys
-		if err := store.SaveUserKeys(uid, gsk); err != nil {
-			fmt.Printf("Error saving user keys: %v\n", err)
-			return
+		if outputPath != "" {
+			// Custom output path
+			if verbose {
+				fmt.Printf("\n3. Saving keys to custom path: %s\n", outputPath)
+			}
+			if err := store.SaveJSON(outputPath, gsk); err != nil {
+				fmt.Printf("Error saving user keys to %s: %v\n", outputPath, err)
+				os.Exit(1)
+			}
+			fmt.Printf("Keys saved to: %s\n", outputPath)
+		} else {
+			if err := store.SaveUserKeys(uid, gsk); err != nil {
+				fmt.Printf("Error saving user keys: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
-		fmt.Printf("\n✅ Keys generated for User %d\n", uid)
+		fmt.Printf("\n[SUCCESS] Keys generated for User %d\n", uid)
 		fmt.Println("\nNext steps:")
 		fmt.Printf("  1. Request GM to issue certificate: gm issue %d\n", uid)
 		fmt.Println("  2. After issuance, you can sign messages: member sign")
@@ -160,7 +207,7 @@ The Sign algorithm:
   
   4. Generate zero-knowledge proof (Stern-like protocol)
      - Proves knowledge of secret credential x where pi = A*x
-     - Proves non-zero public key (pi ≠ 0)
+     - Proves non-zero public key (pi != 0)
      - Proves valid Merkle path to current root
      - Proves well-formed identity ciphertext
      - Achieves soundness error 2/3 per round
@@ -187,12 +234,49 @@ Only the Tracing Manager can identify the signer.`,
 	Args: cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		uid := 0
-		fmt.Sscanf(args[0], "%d", &uid)
-		message := []byte(args[1])
+		n, err := fmt.Sscanf(args[0], "%d", &uid)
+		if err != nil || n != 1 {
+			fmt.Printf("Error: Invalid user ID '%s'. Must be a positive integer.\n", args[0])
+			os.Exit(1)
+		}
+		if uid < 0 {
+			fmt.Printf("Error: User ID must be non-negative (got %d)\n", uid)
+			os.Exit(1)
+		}
+
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		messageFile, _ := cmd.Flags().GetString("message-file")
+		sigOutput, _ := cmd.Flags().GetString("sig-output")
+		saveProofDetails, _ := cmd.Flags().GetBool("save-proof-details")
+
+		var message []byte
+		if messageFile != "" {
+			// Read from file
+			var err error
+			message, err = os.ReadFile(messageFile)
+			if err != nil {
+				fmt.Printf("Error reading message file '%s': %v\n", messageFile, err)
+				os.Exit(1)
+			}
+			if len(message) == 0 {
+				fmt.Println("Error: Message file is empty")
+				os.Exit(1)
+			}
+		} else {
+			message = []byte(args[1])
+			if len(message) == 0 {
+				fmt.Println("Error: Message cannot be empty")
+				os.Exit(1)
+			}
+		}
 
 		fmt.Println("=== Member: Sign Message ===")
 		fmt.Printf("User ID: %d\n", uid)
-		fmt.Printf("Message: %s\n", string(message))
+		if messageFile != "" {
+			fmt.Printf("Message from file: %s (%d bytes)\n", messageFile, len(message))
+		} else {
+			fmt.Printf("Message: %s\n", string(message))
+		}
 
 		// Load storage
 		store, err := storage.NewStorage(dataDir)
@@ -218,16 +302,30 @@ Only the Tracing Manager can identify the signer.`,
 		gsk, err := store.LoadUserKeys(uid)
 		if err != nil {
 			fmt.Printf("Error: User %d keys not found. Run 'member keygen %d' first.\n", uid, uid)
-			return
+			os.Exit(1)
+		}
+
+		// Check if user is active
+		if !info.ActiveUIDs[uid] {
+			fmt.Printf("Error: User %d is not an active group member\n", uid)
+			fmt.Println("Possible reasons:")
+			fmt.Println("  - Certificate not issued by GM (run 'gm issue')")
+			fmt.Println("  - User has been revoked")
+			fmt.Printf("Current epoch: %d\n", info.Epoch)
+			os.Exit(1)
 		}
 
 		// Run Sign protocol
-		fmt.Println("\nRunning Sign protocol...")
+		if verbose {
+			fmt.Println("\nRunning Sign protocol (detailed mode)...")
+		} else {
+			fmt.Println("\nRunning Sign protocol...")
+		}
 		fmt.Println("1. Encrypting identity using Naor-Yung double encryption...")
 		fmt.Println("2. Computing Merkle authentication path...")
 		fmt.Println("3. Generating zero-knowledge proof (Stern-like protocol)...")
 		fmt.Println("   - Proving knowledge of secret credential x")
-		fmt.Println("   - Proving non-zero public key (pi ≠ 0)")
+		fmt.Println("   - Proving non-zero public key (pi != 0)")
 		fmt.Println("   - Proving valid Merkle path")
 		fmt.Println("   - Proving well-formed ciphertext...")
 
@@ -238,15 +336,30 @@ Only the Tracing Manager can identify the signer.`,
 		}
 
 		// Generate signature ID
-		sigID := fmt.Sprintf("%d_%d", time.Now().Unix(), uid)
+		var sigID string
+		if sigOutput != "" {
+			sigID = sigOutput
+		} else {
+			sigID = fmt.Sprintf("%d_%d", time.Now().Unix(), uid)
+		}
 
 		// Save signature
 		if err := store.SaveSignature(sigID, sig); err != nil {
 			fmt.Printf("Error saving signature: %v\n", err)
-			return
+			os.Exit(1)
 		}
 
-		fmt.Printf("\n✅ Signature created successfully\n")
+		// Save proof details if requested
+		if saveProofDetails {
+			proofFile := fmt.Sprintf("%s/proof_details_%s.json", store.DataDir, sigID)
+			if err := store.SaveJSON(proofFile, sig.Proof); err != nil {
+				fmt.Printf("Warning: Could not save proof details: %v\n", err)
+			} else if verbose {
+				fmt.Printf("Proof details saved to: %s\n", proofFile)
+			}
+		}
+
+		fmt.Printf("\n[SUCCESS] Signature created successfully\n")
 		fmt.Printf("Signature ID: %s\n", sigID)
 		fmt.Printf("Epoch: %d\n", sig.Epoch)
 		// Report actual on-disk size
@@ -333,9 +446,9 @@ Useful for checking membership status before signing.`,
 
 		fmt.Println("\nKey Status:")
 		fmt.Printf("  UID: %d\n", gsk.UID)
-		fmt.Println("  ✓ User key pair generated")
-		fmt.Println("  ✓ Secret credential x_i generated")
-		fmt.Println("  ✓ Public credential pi computed")
+		fmt.Println("  [OK] User key pair generated")
+		fmt.Println("  [OK] Secret credential x_i generated")
+		fmt.Println("  [OK] Public credential pi computed")
 
 		fmt.Println("\nMembership Status:")
 		_, registered := reg.Records[uid]

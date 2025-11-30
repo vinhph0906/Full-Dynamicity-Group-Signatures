@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/vinhphamhuu/lattice-group-signature/scheme"
@@ -39,7 +40,7 @@ var verifyCmd = &cobra.Command{
 
 The Verify algorithm checks:
   1. Signature epoch consistency
-     - Signature epoch ≤ current epoch
+     - Signature epoch <= current epoch
      - Merkle root matches group state at signature epoch
   
   2. Zero-knowledge proof validity (Stern protocol)
@@ -55,7 +56,7 @@ The Verify algorithm checks:
   
   4. Signature well-formedness
      - Ciphertexts c1, c2 properly formed
-     - Public credential pi ≠ 0
+     - Public credential pi != 0
      - All components in valid ranges
 
 No secret keys required - anyone can verify!
@@ -82,6 +83,16 @@ Returns:
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		sigID := args[0]
+		if sigID == "" {
+			fmt.Println("Error: Signature ID cannot be empty")
+			os.Exit(1)
+		}
+
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		showProof, _ := cmd.Flags().GetBool("show-proof")
+		checkEpoch, _ := cmd.Flags().GetBool("check-epoch")
+		benchmark, _ := cmd.Flags().GetBool("benchmark")
+		sigFile, _ := cmd.Flags().GetString("sig-file")
 
 		fmt.Println("=== Verifier: Verify Signature ===")
 		fmt.Printf("Signature ID: %s\n", sigID)
@@ -90,36 +101,78 @@ Returns:
 		store, err := storage.NewStorage(dataDir)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-			return
+			os.Exit(1)
 		}
 
 		// Load necessary data
 		gpk, err := store.BuildGroupPublicKey()
 		if err != nil {
 			fmt.Printf("Error loading group public key: %v\n", err)
-			return
+			os.Exit(1)
 		}
 
 		info, err := store.LoadGroupInfo()
 		if err != nil {
 			fmt.Printf("Error loading group info: %v\n", err)
-			return
+			os.Exit(1)
 		}
 
 		// Load signature
-		sig, err := store.LoadSignature(sigID)
-		if err != nil {
-			fmt.Printf("Error: Signature not found: %v\n", err)
-			return
+		var sig *scheme.Signature
+		if sigFile != "" {
+			// Load from custom file
+			sig = &scheme.Signature{}
+			if err := store.LoadJSON(sigFile, sig); err != nil {
+				fmt.Printf("Error loading signature from %s: %v\n", sigFile, err)
+				os.Exit(1)
+			}
+		} else {
+			sig, err = store.LoadSignature(sigID)
+			if err != nil {
+				fmt.Printf("Error: Signature '%s' not found: %v\n", sigID, err)
+				fmt.Println("\nAvailable signatures:")
+				if files, err := os.ReadDir(store.DataDir); err == nil {
+					count := 0
+					for _, f := range files {
+						if !f.IsDir() && len(f.Name()) > 4 && f.Name()[:4] == "sig_" {
+							fmt.Printf("  - %s\n", f.Name()[4:len(f.Name())-5])
+							count++
+						}
+					}
+					if count == 0 {
+						fmt.Println("  (none)")
+					}
+				}
+				os.Exit(1)
+			}
 		}
 
 		// Run Verify protocol
-		fmt.Println("\nRunning Verify protocol...")
+		var startTime time.Time
+		if benchmark {
+			startTime = time.Now()
+		}
+
+		if verbose {
+			fmt.Println("\nRunning Verify protocol (detailed mode)...")
+		} else {
+			fmt.Println("\nRunning Verify protocol...")
+		}
 		fmt.Println("1. Checking signature epoch...")
 		fmt.Printf("   Signature epoch: %d\n", sig.Epoch)
 		fmt.Printf("   Current epoch: %d\n", info.Epoch)
 
-		fmt.Println("2. Verifying zero-knowledge proof...")
+		if checkEpoch && sig.Epoch > info.Epoch {
+			fmt.Printf("\nError: Signature epoch (%d) is in the future (current: %d)\n", sig.Epoch, info.Epoch)
+			fmt.Println("This signature appears to be invalid or tampered with.")
+			os.Exit(1)
+		}
+
+		if verbose {
+			fmt.Println("\n2. Verifying zero-knowledge proof...")
+		} else {
+			fmt.Println("2. Verifying zero-knowledge proof...")
+		}
 		fmt.Println("   - Checking Fiat-Shamir challenges")
 		fmt.Println("   - Verifying Stern protocol responses")
 		fmt.Println("   - Validating Merkle authentication path")
@@ -128,9 +181,29 @@ Returns:
 
 		err = scheme.Verify(gpk, info, sig)
 
+		var verifyTime time.Duration
+		if benchmark {
+			verifyTime = time.Since(startTime)
+		}
+
 		fmt.Println()
 		if err == nil {
-			fmt.Println("✅ VALID SIGNATURE")
+			fmt.Println("[VALID] Signature verification passed")
+			if benchmark {
+				fmt.Printf("\nVerification time: %v\n", verifyTime)
+			}
+			if showProof {
+				fmt.Println("\nZero-Knowledge Proof Details:")
+				if sig.Proof != nil {
+					fmt.Printf("  Proof rounds: %d\n", len(sig.Proof.Commitments))
+					fmt.Printf("  Responses: %d\n", len(sig.Proof.Responses))
+					if verbose {
+						fmt.Printf("  Proof size: ~%d bytes\n", 0)
+					}
+				} else {
+					fmt.Println("  No proof data available")
+				}
+			}
 			fmt.Println("\nThis signature was created by an active group member.")
 			fmt.Println("The signer's identity is hidden but can be traced by the TM.")
 
@@ -144,7 +217,7 @@ Returns:
 				fmt.Printf("  Size: ~%d bytes\n", scheme.SignatureSize(sig))
 			}
 		} else {
-			fmt.Println("❌ INVALID SIGNATURE")
+			fmt.Println("[INVALID] Signature verification failed")
 			fmt.Printf("\nReason: %v\n", err)
 			fmt.Println("\nPossible reasons:")
 			fmt.Println("  - Signature was forged")
@@ -174,10 +247,10 @@ var infoCmd = &cobra.Command{
 Displays:
   - System initialization status
   - Public parameters (pp):
-    * Security parameter λ
+    * Security parameter (lambda)
     * Max users N and Merkle tree height
     * Lattice dimension m and modulus q
-    * SIS bound β and LWE noise parameters
+    * SIS bound (beta) and LWE noise parameters
   
   - Group state:
     * Current epoch number
@@ -193,8 +266,8 @@ Displays:
     * Post-quantum security (lattice-based)
   
   - Complexity analysis:
-    * Signature size: Õ(λ·log N)
-    * Group public key size: Õ(λ² + λ·log N)
+    * Signature size: O(lambda * log N)
+    * Group public key size: O(lambda^2 + lambda * log N)
     * Operation complexities
 
 Flags:
@@ -245,9 +318,9 @@ Useful for understanding system configuration and security.`,
 			return
 		}
 
-		fmt.Println("\nSystem Status: INITIALIZED ✓")
+		fmt.Println("\nSystem Status: INITIALIZED")
 		fmt.Println("\n--- Public Parameters ---")
-		fmt.Printf("Security parameter λ: %d bits\n", pp.Lambda)
+		fmt.Printf("Security parameter (lambda): %d bits\n", pp.Lambda)
 		fmt.Printf("Maximum users N: %d\n", pp.N)
 		fmt.Printf("Modulus q: %d\n", pp.Q)
 		fmt.Printf("Matrix dimension m: %d\n", pp.M)
@@ -260,15 +333,15 @@ Useful for understanding system configuration and security.`,
 		fmt.Printf("Active members: %d\n", len(info.ActiveUIDs))
 
 		fmt.Println("\n--- Security Properties ---")
-		fmt.Println("✓ Anonymity: Signatures hide signer identity")
-		fmt.Println("✓ Traceability: TM can identify signers")
-		fmt.Println("✓ Non-frameability: Cannot forge signatures")
-		fmt.Println("✓ Full dynamicity: Users can join/leave")
-		fmt.Println("✓ Post-quantum security: Based on lattice assumptions (SIS & LWE)")
+		fmt.Println("[+] Anonymity: Signatures hide signer identity")
+		fmt.Println("[+] Traceability: TM can identify signers")
+		fmt.Println("[+] Non-frameability: Cannot forge signatures")
+		fmt.Println("[+] Full dynamicity: Users can join/leave")
+		fmt.Println("[+] Post-quantum security: Based on lattice assumptions (SIS & LWE)")
 
 		fmt.Println("\n--- Complexity ---")
-		fmt.Printf("Signature size: Õ(λ·log N) = Õ(%d·%d) bits\n", pp.Lambda, pp.L)
-		fmt.Printf("Group PK size: Õ(λ² + λ·log N) = Õ(%d + %d) bits\n",
+		fmt.Printf("Signature size: O(lambda * log N) = O(%d * %d) bits\n", pp.Lambda, pp.L)
+		fmt.Printf("Group PK size: O(lambda^2 + lambda * log N) = O(%d + %d) bits\n",
 			pp.Lambda*pp.Lambda, pp.Lambda*pp.L)
 		fmt.Println("Join/Revoke complexity: O(log N)")
 		fmt.Println("Sign/Verify complexity: O(log N)")

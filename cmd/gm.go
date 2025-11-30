@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/vinhphamhuu/lattice-group-signature/scheme"
@@ -33,7 +34,7 @@ var gmSetupCmd = &cobra.Command{
 	Long: `Initialize the group signature system by running GSetup algorithm.
 
 This command performs:
-  1. GSetup: Generate public parameters (pp) based on security parameter λ
+  1. GSetup: Generate public parameters (pp) based on security parameter (lambda)
   2. GKgenGM: Generate Group Manager key pair (mpk, msk)
   3. GKgenTM: Generate Tracing Manager key pair (tpk, tsk)
   4. Initialize empty Merkle tree with N leaves (max users)
@@ -47,7 +48,7 @@ Parameters:
   
   --max-users: Maximum group size N, must be power of 2 (default: 16)
     - Determines Merkle tree height (log N)
-    - Affects signature size: O(λ·log N)
+    - Affects signature size: O(lambda * log N)
   
   --force: Force reinitialize even if system exists
     - WARNING: Destroys all existing keys and signatures!
@@ -57,11 +58,34 @@ Example:
 
 This must be run before any other operations.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		lambda, _ := cmd.Flags().GetInt("lambda")
-		maxUsers, _ := cmd.Flags().GetInt("max-users")
+		lambda, err := cmd.Flags().GetInt("lambda")
+		if err != nil {
+			fmt.Printf("Error: Invalid lambda parameter: %v\n", err)
+			os.Exit(1)
+		}
+		if lambda <= 0 {
+			fmt.Println("Error: Security parameter lambda must be positive")
+			os.Exit(1)
+		}
+		if lambda < 32 {
+			fmt.Printf("Warning: Lambda=%d is very low and insecure. Recommended minimum is 128.\n", lambda)
+		}
+
+		maxUsers, err := cmd.Flags().GetInt("max-users")
+		if err != nil {
+			fmt.Printf("Error: Invalid max-users parameter: %v\n", err)
+			os.Exit(1)
+		}
+		if maxUsers <= 0 || (maxUsers&(maxUsers-1)) != 0 {
+			fmt.Printf("Error: max-users must be a positive power of 2 (got %d)\n", maxUsers)
+			fmt.Println("Valid values: 2, 4, 8, 16, 32, 64, 128, ...")
+			os.Exit(1)
+		}
+
+		force, _ := cmd.Flags().GetBool("force")
 
 		fmt.Println("=== Group Manager: System Setup ===")
-		fmt.Printf("Security parameter λ: %d\n", lambda)
+		fmt.Printf("Security parameter (lambda): %d\n", lambda)
 		fmt.Printf("Maximum users N: %d\n", maxUsers)
 
 		// Initialize storage
@@ -73,14 +97,31 @@ This must be run before any other operations.`,
 
 		// Check if already initialized
 		if store.IsInitialized() {
-			fmt.Println("Error: System already initialized. Delete data directory to reinitialize.")
-			return
+			if !force {
+				fmt.Println("Error: System already initialized.")
+				fmt.Printf("Data directory: %s\n", store.DataDir)
+				fmt.Println("Use --force flag to reinitialize (WARNING: destroys all existing data)")
+				os.Exit(1)
+			}
+			fmt.Println("Warning: Force flag detected. Reinitializing system...")
+			fmt.Println("This will destroy all existing keys, signatures, and state!")
+			// Clean up existing data
+			if err := os.RemoveAll(store.DataDir); err != nil {
+				fmt.Printf("Error removing existing data: %v\n", err)
+				os.Exit(1)
+			}
+			// Recreate storage
+			store, err = storage.NewStorage(dataDir)
+			if err != nil {
+				fmt.Printf("Error recreating storage: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		// Step 1: GSetup - Generate public parameters
 		fmt.Println("\n1. Running GSetup (generating public parameters)...")
 		pp := scheme.GSetup(lambda, maxUsers)
-		fmt.Printf("   ✓ Public parameters generated (m=%d, q=%d bits)\n", pp.M, pp.Q)
+		fmt.Printf("   [OK] Public parameters generated (m=%d, q=%d bits)\n", pp.M, pp.Q)
 
 		// Step 2: GKgenGM - Generate Group Manager keys
 		fmt.Println("\n2. Running GKgenGM (generating GM keys)...")
@@ -89,7 +130,7 @@ This must be run before any other operations.`,
 			fmt.Printf("Error: %v\n", err)
 			return
 		}
-		fmt.Println("   ✓ Group Manager keys generated")
+		fmt.Println("   [OK] Group Manager keys generated")
 
 		// Step 3: GKgenTM - Generate Tracing Manager keys
 		fmt.Println("\n3. Running GKgenTM (generating TM keys)...")
@@ -98,14 +139,14 @@ This must be run before any other operations.`,
 			fmt.Printf("Error: %v\n", err)
 			return
 		}
-		fmt.Println("   ✓ Tracing Manager keys generated")
+		fmt.Println("   [OK] Tracing Manager keys generated")
 
 		// Step 4: Initialize group and registry
 		fmt.Println("\n4. Initializing group state...")
 		reg := scheme.InitializeRegistry(pp)
 		info := scheme.InitializeGroup(pp, reg)
 
-		fmt.Printf("   ✓ Group initialized at epoch %d\n", info.Epoch)
+		fmt.Printf("   [OK] Group initialized at epoch %d\n", info.Epoch)
 
 		// Step 5: Save all data
 		fmt.Println("\n5. Saving to persistent storage...")
@@ -130,7 +171,7 @@ This must be run before any other operations.`,
 			return
 		}
 
-		fmt.Println("\n✅ Setup complete!")
+		fmt.Println("\n[SUCCESS] Setup complete")
 		fmt.Printf("Data directory: %s\n", store.DataDir)
 		fmt.Println("\nGroup public key components saved:")
 		fmt.Println("  - Public parameters (pp)")
@@ -168,7 +209,18 @@ After issuance, the user can sign messages anonymously.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		uid := 0
-		fmt.Sscanf(args[0], "%d", &uid)
+		n, err := fmt.Sscanf(args[0], "%d", &uid)
+		if err != nil || n != 1 {
+			fmt.Printf("Error: Invalid user ID '%s'. Must be a positive integer.\n", args[0])
+			os.Exit(1)
+		}
+		if uid < 0 {
+			fmt.Printf("Error: User ID must be non-negative (got %d)\n", uid)
+			os.Exit(1)
+		}
+
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		autoApprove, _ := cmd.Flags().GetBool("auto-approve")
 
 		fmt.Println("=== Group Manager: Issue Certificate ===")
 		fmt.Printf("User ID: %d\n", uid)
@@ -204,15 +256,52 @@ After issuance, the user can sign messages anonymously.`,
 			return
 		}
 
+		// Check if user ID is within bounds
+		pp, err := store.LoadPublicParameters()
+		if err != nil {
+			fmt.Printf("Error loading public parameters: %v\n", err)
+			os.Exit(1)
+		}
+		if uid >= pp.N {
+			fmt.Printf("Error: User ID %d exceeds maximum allowed (%d)\n", uid, pp.N-1)
+			fmt.Printf("Valid range: 0-%d\n", pp.N-1)
+			os.Exit(1)
+		}
+
+		// Check if already issued
+		if info.ActiveUIDs[uid] {
+			fmt.Printf("Error: User %d already has an active certificate (epoch %d)\n", uid, info.Epoch)
+			fmt.Println("User is already a group member.")
+			os.Exit(1)
+		}
+
 		// Load user's join request (upk and pi)
 		gsk, err := store.LoadUserKeys(uid)
 		if err != nil {
-			fmt.Printf("Error: User %d has not generated keys. User must run 'member keygen' first.\n", uid)
-			return
+			fmt.Printf("Error: User %d has not generated keys. User must run 'member keygen %d' first.\n", uid, uid)
+			os.Exit(1)
+		}
+
+		// Confirmation unless auto-approve
+		if !autoApprove {
+			fmt.Printf("\nIssue certificate to User %d? [y/N]: ", uid)
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" && response != "yes" {
+				fmt.Println("Certificate issuance cancelled.")
+				return
+			}
 		}
 
 		// Run Issue protocol
-		fmt.Println("\nRunning Issue protocol...")
+		if verbose {
+			fmt.Println("\nRunning Issue protocol (detailed mode)...")
+			fmt.Println("1. Validating user credentials...")
+			fmt.Println("2. Adding to Merkle tree...")
+			fmt.Println("3. Updating group state...")
+		} else {
+			fmt.Println("\nRunning Issue protocol...")
+		}
 		err = scheme.Issue(info, msk, gsk.UPK, gsk.PI, uid, reg)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -229,7 +318,7 @@ After issuance, the user can sign messages anonymously.`,
 			return
 		}
 
-		fmt.Printf("\n✅ Certificate issued to User %d\n", uid)
+		fmt.Printf("\n[SUCCESS] Certificate issued to User %d\n", uid)
 		fmt.Printf("Epoch: %d\n", info.Epoch)
 		fmt.Printf("Active members: %d\n", len(info.ActiveUIDs))
 		fmt.Printf("Merkle root: %x...\n", info.RootHash.Data[:8])
@@ -267,14 +356,30 @@ Examples:
 
 This demonstrates the full dynamicity feature of the scheme.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		revokeUIDs, _ := cmd.Flags().GetIntSlice("revoke")
+		revokeUIDs, err := cmd.Flags().GetIntSlice("revoke")
+		if err != nil {
+			fmt.Printf("Error: Invalid revoke parameter: %v\n", err)
+			os.Exit(1)
+		}
 
 		fmt.Println("=== Group Manager: Update Group ===")
 
 		if len(revokeUIDs) == 0 {
-			fmt.Println("No users to revoke. Use --revoke flag to specify UIDs.")
-			return
+			fmt.Println("Error: No users to revoke. Use --revoke flag to specify UIDs.")
+			fmt.Println("Example: --revoke=1,3,5")
+			os.Exit(1)
 		}
+
+		// Validate UIDs
+		for _, uid := range revokeUIDs {
+			if uid < 0 {
+				fmt.Printf("Error: Invalid user ID %d. UIDs must be non-negative.\n", uid)
+				os.Exit(1)
+			}
+		}
+
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		confirm, _ := cmd.Flags().GetBool("confirm")
 
 		fmt.Printf("Revoking users: %v\n", revokeUIDs)
 
@@ -307,14 +412,52 @@ This demonstrates the full dynamicity feature of the scheme.`,
 		reg, err := store.LoadRegistry()
 		if err != nil {
 			fmt.Printf("Error loading registry: %v\n", err)
-			return
+			os.Exit(1)
+		}
+
+		// Validate all UIDs are within bounds and check status
+		pp, _ := store.LoadPublicParameters()
+		var invalidUIDs, notActiveUIDs []int
+		for _, uid := range revokeUIDs {
+			if uid >= pp.N {
+				invalidUIDs = append(invalidUIDs, uid)
+			} else if !info.ActiveUIDs[uid] {
+				notActiveUIDs = append(notActiveUIDs, uid)
+			}
+		}
+
+		if len(invalidUIDs) > 0 {
+			fmt.Printf("Error: UIDs exceed maximum %d: %v\n", pp.N-1, invalidUIDs)
+			os.Exit(1)
+		}
+
+		if len(notActiveUIDs) > 0 {
+			fmt.Printf("Warning: UIDs not currently active (already revoked or never issued): %v\n", notActiveUIDs)
+		}
+
+		// Confirmation
+		if confirm {
+			fmt.Printf("\nRevoke %d user(s): %v? [y/N]: ", len(revokeUIDs), revokeUIDs)
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" && response != "yes" {
+				fmt.Println("Revocation cancelled.")
+				return
+			}
 		}
 
 		oldEpoch := info.Epoch
 		oldActive := len(info.ActiveUIDs)
 
 		// Run GUpdate protocol
-		fmt.Println("\nRunning GUpdate protocol...")
+		if verbose {
+			fmt.Println("\nRunning GUpdate protocol (detailed mode)...")
+			fmt.Println("1. Setting Merkle tree leaves to 0...")
+			fmt.Println("2. Recomputing tree root...")
+			fmt.Println("3. Incrementing epoch...")
+		} else {
+			fmt.Println("\nRunning GUpdate protocol...")
+		}
 		newInfo, err := scheme.GUpdate(gpk, msk, info, revokeUIDs, reg)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -332,9 +475,9 @@ This demonstrates the full dynamicity feature of the scheme.`,
 			return
 		}
 
-		fmt.Printf("\n✅ Group updated successfully\n")
-		fmt.Printf("Epoch: %d → %d\n", oldEpoch, newInfo.Epoch)
-		fmt.Printf("Active members: %d → %d\n", oldActive, len(newInfo.ActiveUIDs))
+		fmt.Printf("\n[SUCCESS] Group updated successfully\n")
+		fmt.Printf("Epoch: %d -> %d\n", oldEpoch, newInfo.Epoch)
+		fmt.Printf("Active members: %d -> %d\n", oldActive, len(newInfo.ActiveUIDs))
 		fmt.Printf("New Merkle root: %x...\n", newInfo.RootHash.Data[:8])
 		fmt.Printf("\nRevoked users can no longer sign messages.\n")
 	},
@@ -428,7 +571,7 @@ func init() {
 	rootCmd.AddCommand(gmCmd)
 
 	// Setup command flags
-	gmSetupCmd.Flags().Int("lambda", 128, "Security parameter λ (bits) - affects lattice dimensions and proof size")
+	gmSetupCmd.Flags().Int("lambda", 128, "Security parameter (lambda) in bits - affects lattice dimensions and proof size")
 	gmSetupCmd.Flags().Int("max-users", 16, "Maximum number of users N (must be power of 2) - determines Merkle tree height")
 	gmSetupCmd.Flags().Bool("force", false, "Force reinitialize even if system already exists")
 
