@@ -26,11 +26,7 @@ Verification checks:
   - Zero-knowledge proof validity (Stern protocol)
   - Merkle root matches group state at signature epoch
   - Signature components are well-formed
-  - Cryptographic commitments and challenges are correct
-
-Available commands:
-  verify  - Verify a group signature's validity
-  info    - Display system information and parameters`,
+  - Cryptographic commitments and challenges are correct`,
 }
 
 var verifyCmd = &cobra.Command{
@@ -204,7 +200,6 @@ Returns:
 					fmt.Println("  No proof data available")
 				}
 			}
-
 
 			fmt.Printf("\nSignature details:\n")
 			fmt.Printf("  Message: %s\n", string(sig.Message))

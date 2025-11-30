@@ -25,12 +25,7 @@ Workflow:
   1. keygen <uid> - Generate keys and credentials
   2. Wait for GM to issue certificate
   3. sign <uid> <message> - Create anonymous signatures
-  4. info <uid> - Check membership status
-
-Available commands:
-  keygen  - Generate user keys and credentials
-  sign    - Create an anonymous group signature
-  info    - Display member status and information`,
+  4. info <uid> - Check membership status`,
 }
 
 var memberKeygenCmd = &cobra.Command{

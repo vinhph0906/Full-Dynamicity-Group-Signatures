@@ -112,16 +112,11 @@ func extendP(p *lattice.Vector, q int64) *lattice.Vector {
 
 	result := lattice.NewVector(targetLen, q)
 
-	onesCount := 0
-
 	// Copy p to first nk positions (ensure binary form)
 	for i := 0; i < nk; i++ {
 		bit := p.Data[i] % 2
 		if bit < 0 {
 			bit += 2
-		}
-		if bit == 1 {
-			onesCount++
 		}
 		result.Data[i] = bit
 	}

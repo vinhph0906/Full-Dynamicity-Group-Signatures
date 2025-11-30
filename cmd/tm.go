@@ -23,12 +23,7 @@ The TM is responsible for:
 Security guarantees:
   - Only the TM can trace signatures (traceability)
   - Tracing proofs are publicly verifiable (Judge algorithm)
-  - Cannot falsely attribute signatures (non-frameability)
-
-Available commands:
-  trace  - Identify the signer of a group signature
-  judge  - Verify a tracing proof's correctness
-  info   - Display TM public key information`,
+  - Cannot falsely attribute signatures (non-frameability)`,
 }
 
 var tmTraceCmd = &cobra.Command{

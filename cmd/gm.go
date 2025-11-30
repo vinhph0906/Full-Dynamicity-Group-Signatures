@@ -19,13 +19,7 @@ The GM is responsible for:
   - Issuing certificates to new members (Issue protocol)
   - Revoking members from the group (GUpdate protocol)
   - Maintaining the Merkle tree of active members
-  - Managing group state and epoch transitions
-
-Available commands:
-  setup   - Initialize the entire group signature system
-  issue   - Add a new member to the group
-  update  - Revoke members and update group state
-  list    - View current group membership`,
+  - Managing group state and epoch transitions`,
 }
 
 var gmSetupCmd = &cobra.Command{
