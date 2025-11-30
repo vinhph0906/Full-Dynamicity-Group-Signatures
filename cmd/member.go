@@ -64,11 +64,7 @@ Flags:
 Examples:
   lattice-gs member keygen 5
   lattice-gs member keygen 5 --verbose
-  lattice-gs member keygen 5 --force --output=/tmp/user5.json
-
-Next steps:
-  1. Request GM to issue certificate: 'lattice-gs gm issue <uid>'
-  2. After issuance, create signatures: 'lattice-gs member sign <uid> <msg>'`,
+  lattice-gs member keygen 5 --force --output=/tmp/user5.json`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		uid := 0
@@ -184,9 +180,6 @@ Next steps:
 		}
 
 		fmt.Printf("\n[SUCCESS] Keys generated for User %d\n", uid)
-		fmt.Println("\nNext steps:")
-		fmt.Printf("  1. Request GM to issue certificate: gm issue %d\n", uid)
-		fmt.Println("  2. After issuance, you can sign messages: member sign")
 	},
 }
 
@@ -308,14 +301,9 @@ Only the Tracing Manager can identify the signer.`,
 		// Check if user is active
 		if !info.ActiveUIDs[uid] {
 			fmt.Printf("Error: User %d is not an active group member\n", uid)
-			fmt.Println("Possible reasons:")
-			fmt.Println("  - Certificate not issued by GM (run 'gm issue')")
-			fmt.Println("  - User has been revoked")
 			fmt.Printf("Current epoch: %d\n", info.Epoch)
 			os.Exit(1)
-		}
-
-		// Run Sign protocol
+		} // Run Sign protocol
 		if verbose {
 			fmt.Println("\nRunning Sign protocol (detailed mode)...")
 		} else {
@@ -369,9 +357,6 @@ Only the Tracing Manager can identify the signer.`,
 		} else {
 			fmt.Printf("Size: ~%d bytes\n", scheme.SignatureSize(sig))
 		}
-		fmt.Println("\nThe signature is anonymous - it reveals no information about the signer.")
-		fmt.Println("Anyone can verify it, but only the Tracing Manager can identify you.")
-		fmt.Printf("\nTo verify: verifier verify %s\n", sigID)
 	},
 }
 

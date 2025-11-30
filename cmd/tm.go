@@ -205,7 +205,6 @@ Anyone can verify tracing correctness using: 'lattice-gs tm judge <sig-id> <uid>
 		fmt.Printf("Signer: User %d\n", uid)
 		fmt.Printf("Signature epoch: %d\n", sig.Epoch)
 		fmt.Printf("Trace proof saved to: %s\n", traceFile)
-		fmt.Println("\nAnyone can verify this tracing result using 'tm judge' command.")
 	},
 }
 
@@ -316,7 +315,6 @@ Returns:
 		var proof scheme.TraceProof
 		if err := store.LoadJSON(tracePath, &proof); err != nil {
 			fmt.Printf("Error loading trace proof from %s: %v\n", tracePath, err)
-			fmt.Println("\nMake sure you have traced this signature first using 'tm trace' command.")
 			os.Exit(1)
 		}
 

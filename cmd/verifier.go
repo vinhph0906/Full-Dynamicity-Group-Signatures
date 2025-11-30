@@ -164,7 +164,7 @@ Returns:
 
 		if checkEpoch && sig.Epoch > info.Epoch {
 			fmt.Printf("\nError: Signature epoch (%d) is in the future (current: %d)\n", sig.Epoch, info.Epoch)
-			fmt.Println("This signature appears to be invalid or tampered with.")
+
 			os.Exit(1)
 		}
 
@@ -204,8 +204,7 @@ Returns:
 					fmt.Println("  No proof data available")
 				}
 			}
-			fmt.Println("\nThis signature was created by an active group member.")
-			fmt.Println("The signer's identity is hidden but can be traced by the TM.")
+
 
 			fmt.Printf("\nSignature details:\n")
 			fmt.Printf("  Message: %s\n", string(sig.Message))
@@ -219,11 +218,6 @@ Returns:
 		} else {
 			fmt.Println("[INVALID] Signature verification failed")
 			fmt.Printf("\nReason: %v\n", err)
-			fmt.Println("\nPossible reasons:")
-			fmt.Println("  - Signature was forged")
-			fmt.Println("  - Signer was not active at the signature epoch")
-			fmt.Println("  - Signature was tampered with")
-			fmt.Println("  - Cryptographic proof verification failed")
 
 			fmt.Printf("\nSignature details:\n")
 			fmt.Printf("  Message: %s\n", string(sig.Message))

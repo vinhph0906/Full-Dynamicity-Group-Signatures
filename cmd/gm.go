@@ -173,10 +173,6 @@ This must be run before any other operations.`,
 
 		fmt.Println("\n[SUCCESS] Setup complete")
 		fmt.Printf("Data directory: %s\n", store.DataDir)
-		fmt.Println("\nGroup public key components saved:")
-		fmt.Println("  - Public parameters (pp)")
-		fmt.Println("  - GM public key (mpk)")
-		fmt.Println("  - TM public key (tpk)")
 	},
 }
 
@@ -479,7 +475,6 @@ This demonstrates the full dynamicity feature of the scheme.`,
 		fmt.Printf("Epoch: %d -> %d\n", oldEpoch, newInfo.Epoch)
 		fmt.Printf("Active members: %d -> %d\n", oldActive, len(newInfo.ActiveUIDs))
 		fmt.Printf("New Merkle root: %x...\n", newInfo.RootHash.Data[:8])
-		fmt.Printf("\nRevoked users can no longer sign messages.\n")
 	},
 }
 
