@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 
 	"github.com/vinhphamhuu/lattice-group-signature/lattice"
 	"golang.org/x/crypto/sha3"
@@ -69,12 +71,18 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 
 	// Derive challenges via Fiat–Shamir; ignore stored challenges to avoid serialization drift
 
-	dummyWitness := createDummyWitness(params)
+	dummyWitness := getDummyWitnessTemplate(params)
+	if dummyWitness == nil {
+		return fmt.Errorf("failed to build witness template")
+	}
 	witnessSize := equation.WitnessSize
 	rhoSize := 2 * params.NK
 
-	for round := 0; round < params.Kappa; round++ {
-		// debug: show expected challenge per round
+	if params.Kappa == 0 {
+		return nil
+	}
+
+	verifyRound := func(round int) error {
 		if Debug {
 			fmt.Printf("[debug] round %d challenge=%d\n", round, expectedChallenges[round])
 		}
@@ -279,6 +287,53 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 		default:
 			return fmt.Errorf("round %d: unknown challenge value %d", round, expectedChallenges[round])
 		}
+
+		return nil
+	}
+
+	workerCount := lattice.MaxWorkers
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	if workerCount > params.Kappa {
+		workerCount = params.Kappa
+	}
+
+	var abort atomic.Bool
+	errCh := make(chan error, 1)
+	jobs := make(chan int, params.Kappa)
+	var wg sync.WaitGroup
+	for w := 0; w < workerCount; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for round := range jobs {
+				if abort.Load() {
+					continue
+				}
+				if err := verifyRound(round); err != nil {
+					if !abort.Load() {
+						abort.Store(true)
+						select {
+						case errCh <- err:
+						default:
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	for round := 0; round < params.Kappa; round++ {
+		jobs <- round
+	}
+	close(jobs)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
 	}
 
 	// Explicit Merkle verification removed; constraints are enforced via M·z = u.
@@ -816,7 +871,7 @@ func verifyPermutation(eta *Permutation, params *lattice.PublicParameters) error
 			return fmt.Errorf("invalid Bv[%d]: %v", i, err)
 		}
 		if !isPairPreserving(bv, params.NK) {
-			return fmt.Errorf("Bv[%d] not pair-preserving", i)
+			return fmt.Errorf("bv[%d] not pair-preserving", i)
 		}
 	}
 
@@ -854,7 +909,7 @@ func verifyPermutation(eta *Permutation, params *lattice.PublicParameters) error
 			for j := half; j < half+10 && j < len(bwh); j++ {
 				sampleSecondHalf += fmt.Sprintf("[%d]=%d,", j, bwh[j])
 			}
-			return fmt.Errorf("BwHat[%d] not half/pair-preserving (len=%d, NK=%d, half=%d) first10=%s secondHalf=%s",
+			return fmt.Errorf("bwHat[%d] not half/pair-preserving (len=%d, NK=%d, half=%d) first10=%s secondHalf=%s",
 				i, len(bwh), params.NK, half, sample, sampleSecondHalf)
 		}
 	}
@@ -863,7 +918,7 @@ func verifyPermutation(eta *Permutation, params *lattice.PublicParameters) error
 			return fmt.Errorf("invalid Bw[%d]: %v", i, err)
 		}
 		if !isPairPreserving(bw, params.NK) {
-			return fmt.Errorf("Bw[%d] not pair-preserving", i)
+			return fmt.Errorf("bw[%d] not pair-preserving", i)
 		}
 	}
 
@@ -983,6 +1038,26 @@ func isValidPermutation(perm []int, n int) error {
 
 // createDummyWitness creates a witness structure with correct sizes for permutation derivation
 // The verifier doesn't have the actual witness, but needs the structure to derive the same permutation
+var sternWitnessTemplateCache sync.Map
+
+func getDummyWitnessTemplate(params *lattice.PublicParameters) *SternWitness {
+	if params == nil {
+		return nil
+	}
+	key := paramsFingerprint(params)
+	if cached, ok := sternWitnessTemplateCache.Load(key); ok {
+		if sw, ok := cached.(*SternWitness); ok {
+			return sw
+		}
+	}
+	templ := createDummyWitness(params)
+	if templ == nil {
+		return nil
+	}
+	sternWitnessTemplateCache.Store(key, templ)
+	return templ
+}
+
 func createDummyWitness(params *lattice.PublicParameters) *SternWitness {
 	sw := &SternWitness{}
 

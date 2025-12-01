@@ -51,7 +51,7 @@ Flags:
   --verbose: Show detailed tracing steps
   --proof-output: Custom path for trace proof
     - Default: <data-dir>/trace_<sig-id>.json
-  --verify-before-trace: Verify signature first (default: true)
+	--verify-before-trace: Verify signature first (default: false)
   --save-decryption-log: Save intermediate decryption steps
 
 Examples:
@@ -417,7 +417,7 @@ func init() {
 	// Trace command flags
 	tmTraceCmd.Flags().Bool("verbose", false, "Show detailed tracing protocol steps")
 	tmTraceCmd.Flags().String("proof-output", "", "Custom output path for trace proof (default: data-dir/trace_<sig-id>.json)")
-	tmTraceCmd.Flags().Bool("verify-before-trace", true, "Verify signature validity before attempting to trace")
+	tmTraceCmd.Flags().Bool("verify-before-trace", false, "Verify signature validity before attempting to trace")
 	tmTraceCmd.Flags().Bool("save-decryption-log", false, "Save decryption intermediate steps for audit")
 
 	// Judge command flags
