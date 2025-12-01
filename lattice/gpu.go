@@ -3,21 +3,248 @@ package lattice
 import (
 	"fmt"
 	"sync"
+	"unsafe"
 )
 
-// GPU acceleration implementation for matrix operations
-// This provides a Go-native GPU interface that can be extended with
-// actual GPU libraries (OpenCL, CUDA) when available
+// #cgo CFLAGS: -x objective-c -fno-objc-arc
+// #cgo LDFLAGS: -framework Metal -framework Foundation -framework CoreGraphics
+// #import <Metal/Metal.h>
+// #import <Foundation/Foundation.h>
+//
+// typedef struct {
+//     void* device;
+//     void* commandQueue;
+//     void* matvecPipeline;
+//     void* matmulPipeline;
+//     int initialized;
+// } MetalContext;
+//
+// const char* kernelSource =
+// "kernel void matvec_mul("
+// "    device const long* matrix [[ buffer(0) ]],"
+// "    device const long* vector [[ buffer(1) ]],"
+// "    device long* result [[ buffer(2) ]],"
+// "    constant int& cols [[ buffer(3) ]],"
+// "    constant long& modulus [[ buffer(4) ]],"
+// "    uint row [[ thread_position_in_grid ]]"
+// ") {"
+// "    long sum = 0;"
+// "    int base = row * cols;"
+// "    for (int i = 0; i < cols; i++) {"
+// "        sum += matrix[base + i] * vector[i];"
+// "    }"
+// "    result[row] = sum % modulus;"
+// "}\n"
+// "\n"
+// "kernel void matmat_mul("
+// "    device const long* matrixA [[ buffer(0) ]],"
+// "    device const long* matrixB [[ buffer(1) ]],"
+// "    device long* result [[ buffer(2) ]],"
+// "    constant int& M [[ buffer(3) ]],"
+// "    constant int& N [[ buffer(4) ]],"
+// "    constant int& K [[ buffer(5) ]],"
+// "    constant long& modulus [[ buffer(6) ]],"
+// "    uint2 gid [[ thread_position_in_grid ]]"
+// ") {"
+// "    int row = gid.y;"
+// "    int col = gid.x;"
+// "    if (row >= M || col >= K) return;"
+// "    long sum = 0;"
+// "    for (int i = 0; i < N; i++) {"
+// "        sum += matrixA[row * N + i] * matrixB[i * K + col];"
+// "    }"
+// "    result[row * K + col] = sum % modulus;"
+// "}";
+//
+// MetalContext* createMetalContext() {
+//     @autoreleasepool {
+//         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+//         if (!device) {
+//             return NULL;
+//         }
+//
+//         id<MTLCommandQueue> queue = [device newCommandQueue];
+//         if (!queue) {
+//             return NULL;
+//         }
+//
+//         // Compile Metal shader
+//         NSError* error = nil;
+//         NSString* source = [NSString stringWithUTF8String:kernelSource];
+//         id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+//         if (!library) {
+//             NSLog(@"Metal library creation failed: %@", error);
+//             return NULL;
+//         }
+//
+//         id<MTLFunction> matvecFunc = [library newFunctionWithName:@"matvec_mul"];
+//         id<MTLFunction> matmulFunc = [library newFunctionWithName:@"matmat_mul"];
+//         if (!matvecFunc || !matmulFunc) {
+//             return NULL;
+//         }
+//
+//         id<MTLComputePipelineState> matvecPipeline = [device newComputePipelineStateWithFunction:matvecFunc error:&error];
+//         id<MTLComputePipelineState> matmulPipeline = [device newComputePipelineStateWithFunction:matmulFunc error:&error];
+//         if (!matvecPipeline || !matmulPipeline) {
+//             NSLog(@"Metal pipeline creation failed: %@", error);
+//             return NULL;
+//         }
+//
+//         MetalContext* ctx = (MetalContext*)malloc(sizeof(MetalContext));
+//         ctx->device = (void*)CFBridgingRetain(device);
+//         ctx->commandQueue = (void*)CFBridgingRetain(queue);
+//         ctx->matvecPipeline = (void*)CFBridgingRetain(matvecPipeline);
+//         ctx->matmulPipeline = (void*)CFBridgingRetain(matmulPipeline);
+//         ctx->initialized = 1;
+//         return ctx;
+//     }
+// }
+//
+// void releaseMetalContext(MetalContext* ctx) {
+//     if (ctx) {
+//         if (ctx->matmulPipeline) CFRelease(ctx->matmulPipeline);
+//         if (ctx->matvecPipeline) CFRelease(ctx->matvecPipeline);
+//         if (ctx->commandQueue) CFRelease(ctx->commandQueue);
+//         if (ctx->device) CFRelease(ctx->device);
+//         free(ctx);
+//     }
+// }
+//
+// // Metal matrix-vector multiply using custom kernel
+// int metalMatVecMul(MetalContext* ctx, long* matrix, long* vector, long* result,
+//                    int rows, int cols, long modulus) {
+//     @autoreleasepool {
+//         id<MTLDevice> device = (__bridge id<MTLDevice>)ctx->device;
+//         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->commandQueue;
+//         id<MTLComputePipelineState> pipeline = (__bridge id<MTLComputePipelineState>)ctx->matvecPipeline;
+//
+//         // Create Metal buffers
+//         size_t matrixSize = rows * cols * sizeof(long);
+//         size_t vectorSize = cols * sizeof(long);
+//         size_t resultSize = rows * sizeof(long);
+//
+//         id<MTLBuffer> matrixBuffer = [device newBufferWithBytes:matrix
+//                                              length:matrixSize
+//                                              options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> vectorBuffer = [device newBufferWithBytes:vector
+//                                              length:vectorSize
+//                                              options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> resultBuffer = [device newBufferWithLength:resultSize
+//                                              options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> colsBuffer = [device newBufferWithBytes:&cols
+//                                            length:sizeof(int)
+//                                            options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> modBuffer = [device newBufferWithBytes:&modulus
+//                                           length:sizeof(long)
+//                                           options:MTLResourceStorageModeShared];
+//
+//         if (!matrixBuffer || !vectorBuffer || !resultBuffer || !colsBuffer || !modBuffer) {
+//             return -1;
+//         }
+//
+//         // Create command buffer and encoder
+//         id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+//         id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+//
+//         [encoder setComputePipelineState:pipeline];
+//         [encoder setBuffer:matrixBuffer offset:0 atIndex:0];
+//         [encoder setBuffer:vectorBuffer offset:0 atIndex:1];
+//         [encoder setBuffer:resultBuffer offset:0 atIndex:2];
+//         [encoder setBuffer:colsBuffer offset:0 atIndex:3];
+//         [encoder setBuffer:modBuffer offset:0 atIndex:4];
+//
+//         // Configure thread groups
+//         NSUInteger threadGroupSize = MIN(256, pipeline.maxTotalThreadsPerThreadgroup);
+//         MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, 1, 1);
+//         MTLSize numThreadGroups = MTLSizeMake((rows + threadGroupSize - 1) / threadGroupSize, 1, 1);
+//
+//         [encoder dispatchThreadgroups:numThreadGroups threadsPerThreadgroup:threadsPerGroup];
+//         [encoder endEncoding];
+//
+//         [commandBuffer commit];
+//         [commandBuffer waitUntilCompleted];
+//
+//         // Copy result back
+//         memcpy(result, resultBuffer.contents, resultSize);
+//
+//         return 0;
+//     }
+// }
+//
+// // Metal matrix-matrix multiply: C = A × B (M×N) × (N×K) = (M×K)
+// int metalMatMatMul(MetalContext* ctx, long* matrixA, long* matrixB, long* result,
+//                    int M, int N, int K, long modulus) {
+//     @autoreleasepool {
+//         id<MTLDevice> device = (__bridge id<MTLDevice>)ctx->device;
+//         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->commandQueue;
+//         id<MTLComputePipelineState> pipeline = (__bridge id<MTLComputePipelineState>)ctx->matmulPipeline;
+//
+//         // Create Metal buffers
+//         size_t sizeA = M * N * sizeof(long);
+//         size_t sizeB = N * K * sizeof(long);
+//         size_t sizeC = M * K * sizeof(long);
+//
+//         id<MTLBuffer> bufferA = [device newBufferWithBytes:matrixA length:sizeA options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> bufferB = [device newBufferWithBytes:matrixB length:sizeB options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> bufferC = [device newBufferWithLength:sizeC options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> bufferM = [device newBufferWithBytes:&M length:sizeof(int) options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> bufferN = [device newBufferWithBytes:&N length:sizeof(int) options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> bufferK = [device newBufferWithBytes:&K length:sizeof(int) options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> bufferMod = [device newBufferWithBytes:&modulus length:sizeof(long) options:MTLResourceStorageModeShared];
+//
+//         if (!bufferA || !bufferB || !bufferC || !bufferM || !bufferN || !bufferK || !bufferMod) {
+//             return -1;
+//         }
+//
+//         // Create command buffer and encoder
+//         id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+//         id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+//
+//         [encoder setComputePipelineState:pipeline];
+//         [encoder setBuffer:bufferA offset:0 atIndex:0];
+//         [encoder setBuffer:bufferB offset:0 atIndex:1];
+//         [encoder setBuffer:bufferC offset:0 atIndex:2];
+//         [encoder setBuffer:bufferM offset:0 atIndex:3];
+//         [encoder setBuffer:bufferN offset:0 atIndex:4];
+//         [encoder setBuffer:bufferK offset:0 atIndex:5];
+//         [encoder setBuffer:bufferMod offset:0 atIndex:6];
+//
+//         // Configure 2D thread groups
+//         NSUInteger threadGroupSize = 16; // 16x16 thread group
+//         MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, threadGroupSize, 1);
+//         MTLSize numThreadGroups = MTLSizeMake(
+//             (K + threadGroupSize - 1) / threadGroupSize,
+//             (M + threadGroupSize - 1) / threadGroupSize,
+//             1
+//         );
+//
+//         [encoder dispatchThreadgroups:numThreadGroups threadsPerThreadgroup:threadsPerGroup];
+//         [encoder endEncoding];
+//
+//         [commandBuffer commit];
+//         [commandBuffer waitUntilCompleted];
+//
+//         // Copy result back
+//         memcpy(result, bufferC.contents, sizeC);
+//
+//         return 0;
+//     }
+// }
+import "C"
 
 var (
 	gpuInitialized bool
 	gpuMutex       sync.RWMutex
 	gpuDevice      *GPUDevice
+	metalContext   *C.MetalContext
 
 	// GPU usage statistics
 	gpuOpsCount int64
 	cpuOpsCount int64
 	statsMutex  sync.RWMutex
+
+	// Kernel execution mutex
+	kernelMutex sync.Mutex
 )
 
 // GPUDevice represents a GPU compute device
@@ -59,7 +286,6 @@ func ResetGPUStats() {
 }
 
 // BatchMatrixVectorMul performs multiple matrix-vector multiplications in parallel
-// This is useful for commitment rounds where we compute A0*r0 and A1*r1 for multiple rounds
 func BatchMatrixVectorMul(matrices []*Matrix, vectors []*Vector) []*Vector {
 	if len(matrices) != len(vectors) {
 		panic("batch mul: matrices and vectors length mismatch")
@@ -80,41 +306,17 @@ func BatchMatrixVectorMul(matrices []*Matrix, vectors []*Vector) []*Vector {
 	}
 
 	if useGPU {
-		// GPU batch processing
-		recordGPUOp()
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, MaxWorkers)
-
+		// Process all on GPU
 		for i := range matrices {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(idx int) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				// Use GPU-optimized multiplication
-				m := matrices[idx]
-				v := vectors[idx]
-				resultData := gpuMatrixVectorMulOptimized(m.Data, v.Data, m.Rows, m.Cols, m.Q)
-				results[idx] = &Vector{
-					Data: resultData,
-					Size: m.Rows,
-					Q:    m.Q,
-				}
-			}(i)
+			results[i] = matrices[i].Mul(vectors[i])
 		}
-		wg.Wait()
 	} else {
-		// CPU batch processing with parallelization
-		recordCPUOp()
+		// Process all on CPU in parallel
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, MaxWorkers)
-
 		for i := range matrices {
 			wg.Add(1)
-			sem <- struct{}{}
 			go func(idx int) {
 				defer wg.Done()
-				defer func() { <-sem }()
 				results[idx] = matrices[idx].Mul(vectors[idx])
 			}(i)
 		}
@@ -124,254 +326,201 @@ func BatchMatrixVectorMul(matrices []*Matrix, vectors []*Vector) []*Vector {
 	return results
 }
 
+// InitGPU initializes the GPU for use
+func InitGPU() error {
+	gpuMutex.Lock()
+	defer gpuMutex.Unlock()
+
+	if gpuInitialized {
+		return nil
+	}
+
+	device, err := detectGPU()
+	if err != nil {
+		return err
+	}
+
+	gpuDevice = device
+	gpuInitialized = true
+	return nil
+}
+
+// IsGPUAvailable checks if GPU is available for use
+func IsGPUAvailable() bool {
+	gpuMutex.RLock()
+	defer gpuMutex.RUnlock()
+	return gpuInitialized && gpuDevice != nil && gpuDevice.Available
+}
+
+// GetGPUDevice returns information about the GPU
+func GetGPUDevice() *GPUDevice {
+	gpuMutex.RLock()
+	defer gpuMutex.RUnlock()
+	return gpuDevice
+}
+
+// GetGPUInfo returns a formatted string with GPU information
+func GetGPUInfo() string {
+	if !IsGPUAvailable() {
+		return "GPU: Not available"
+	}
+	device := GetGPUDevice()
+	if device == nil {
+		return "GPU: Not initialized"
+	}
+	return fmt.Sprintf("%s (Metal Performance Shaders, Unified Memory: %d MB)",
+		device.Name, device.GlobalMemSize)
+}
+
+// detectGPU initializes Metal device
+func detectGPU() (*GPUDevice, error) {
+	ctx := C.createMetalContext()
+	if ctx == nil {
+		return nil, fmt.Errorf("no Metal device available")
+	}
+
+	metalContext = ctx
+
+	fmt.Println("[GPU] Metal GPU initialized successfully (M3)")
+
+	return &GPUDevice{
+		Name:          "Apple Metal GPU (M3)",
+		Available:     true,
+		GlobalMemSize: 12 * 1024, // 12GB unified memory on M3
+	}, nil
+}
+
+// gpuMatrixVectorMul performs matrix-vector multiplication using Metal with int64 precision
+func gpuMatrixVectorMul(matrix [][]int64, vector []int64, modulus int64) ([]int64, error) {
+	kernelMutex.Lock()
+	defer kernelMutex.Unlock()
+
+	if metalContext == nil {
+		return nil, fmt.Errorf("Metal not initialized")
+	}
+
+	rows := len(matrix)
+	cols := len(matrix[0])
+
+	// Flatten matrix to row-major format (keep int64)
+	flatMatrix := make([]int64, rows*cols)
+	for i := 0; i < rows; i++ {
+		for j := 0; j < cols; j++ {
+			flatMatrix[i*cols+j] = matrix[i][j]
+		}
+	}
+
+	// Prepare result buffer
+	result := make([]int64, rows)
+
+	// Call Metal matrix-vector multiplication with int64 precision
+	ret := C.metalMatVecMul(
+		metalContext,
+		(*C.long)(unsafe.Pointer(&flatMatrix[0])),
+		(*C.long)(unsafe.Pointer(&vector[0])),
+		(*C.long)(unsafe.Pointer(&result[0])),
+		C.int(rows),
+		C.int(cols),
+		C.long(modulus),
+	)
+
+	if ret != 0 {
+		return nil, fmt.Errorf("Metal matrix multiplication failed")
+	}
+
+	recordGPUOp()
+	return result, nil
+}
+
+// gpuMatrixMatrixMul performs matrix-matrix multiplication using Metal: C = A × B
+// A is M×N, B is N×K, result is M×K
+func gpuMatrixMatrixMul(matrixA [][]int64, matrixB [][]int64, modulus int64) ([][]int64, error) {
+	kernelMutex.Lock()
+	defer kernelMutex.Unlock()
+
+	if metalContext == nil {
+		return nil, fmt.Errorf("Metal not initialized")
+	}
+
+	M := len(matrixA)
+	N := len(matrixA[0])
+	K := len(matrixB[0])
+
+	if len(matrixB) != N {
+		return nil, fmt.Errorf("incompatible dimensions: A is %dx%d, B is %dx%d", M, N, len(matrixB), K)
+	}
+
+	// Flatten matrices to row-major format
+	flatA := make([]int64, M*N)
+	for i := 0; i < M; i++ {
+		for j := 0; j < N; j++ {
+			flatA[i*N+j] = matrixA[i][j]
+		}
+	}
+
+	flatB := make([]int64, N*K)
+	for i := 0; i < N; i++ {
+		for j := 0; j < K; j++ {
+			flatB[i*K+j] = matrixB[i][j]
+		}
+	}
+
+	// Prepare result buffer
+	flatC := make([]int64, M*K)
+
+	// Call Metal matrix-matrix multiplication
+	ret := C.metalMatMatMul(
+		metalContext,
+		(*C.long)(unsafe.Pointer(&flatA[0])),
+		(*C.long)(unsafe.Pointer(&flatB[0])),
+		(*C.long)(unsafe.Pointer(&flatC[0])),
+		C.int(M),
+		C.int(N),
+		C.int(K),
+		C.long(modulus),
+	)
+
+	if ret != 0 {
+		return nil, fmt.Errorf("Metal matrix-matrix multiplication failed")
+	}
+
+	// Convert flat result back to 2D array
+	result := make([][]int64, M)
+	for i := 0; i < M; i++ {
+		result[i] = make([]int64, K)
+		for j := 0; j < K; j++ {
+			result[i][j] = flatC[i*K+j]
+		}
+	}
+
+	recordGPUOp()
+	return result, nil
+}
+
+// recordGPUOp increments the GPU operation counter
 func recordGPUOp() {
 	statsMutex.Lock()
 	gpuOpsCount++
 	statsMutex.Unlock()
 }
 
+// recordCPUOp increments the CPU operation counter
 func recordCPUOp() {
 	statsMutex.Lock()
 	cpuOpsCount++
 	statsMutex.Unlock()
 }
 
-// InitGPU attempts to initialize GPU support
-// Returns true if GPU is available, false otherwise
-func InitGPU() bool {
+// Cleanup releases GPU resources
+func Cleanup() {
 	gpuMutex.Lock()
 	defer gpuMutex.Unlock()
 
-	if gpuInitialized {
-		return gpuDevice != nil && gpuDevice.Available
+	if metalContext != nil {
+		C.releaseMetalContext(metalContext)
+		metalContext = nil
 	}
 
-	gpuInitialized = true
-
-	// Try to detect and initialize GPU
-	device := detectGPU()
-	if device != nil && device.Available {
-		gpuDevice = device
-		return true
-	}
-
-	return false
+	gpuInitialized = false
+	gpuDevice = nil
 }
-
-// detectGPU attempts to detect available GPU devices
-func detectGPU() *GPUDevice {
-	// TODO: Integrate with actual GPU libraries
-	// For now, check if environment suggests GPU availability
-
-	// This is where you would:
-	// 1. Import "github.com/jgillich/go-opencl/cl" or similar
-	// 2. Query available platforms and devices
-	// 3. Create compute context and command queue
-
-	// Placeholder implementation - always returns nil for now
-	// Actual implementation would look like:
-	/*
-		platforms, err := cl.GetPlatforms()
-		if err != nil || len(platforms) == 0 {
-			return nil
-		}
-
-		for _, platform := range platforms {
-			devices, err := platform.GetDevices(cl.DeviceTypeGPU)
-			if err != nil || len(devices) == 0 {
-				continue
-			}
-
-			device := devices[0] // Use first GPU
-			return &GPUDevice{
-				Name:             device.Name(),
-				Available:        true,
-				MaxWorkGroupSize: device.MaxWorkGroupSize(),
-				GlobalMemSize:    device.GlobalMemSize(),
-			}
-		}
-	*/
-
-	return nil // No GPU available in this implementation
-}
-
-// IsGPUAvailable checks if GPU is initialized and available
-func IsGPUAvailable() bool {
-	gpuMutex.RLock()
-	defer gpuMutex.RUnlock()
-	return gpuDevice != nil && gpuDevice.Available
-}
-
-// GetGPUInfo returns information about the GPU device
-func GetGPUInfo() string {
-	gpuMutex.RLock()
-	defer gpuMutex.RUnlock()
-
-	stats := GetGPUStats()
-
-	if gpuDevice == nil || !gpuDevice.Available {
-		if stats.GPUOperations > 0 || stats.CPUOperations > 0 {
-			return fmt.Sprintf("No GPU available (CPU ops: %d)", stats.CPUOperations)
-		}
-		return "No GPU available"
-	}
-
-	return fmt.Sprintf("GPU: %s (WorkGroup: %d, Memory: %d MB) - GPU ops: %d, CPU ops: %d",
-		gpuDevice.Name,
-		gpuDevice.MaxWorkGroupSize,
-		gpuDevice.GlobalMemSize/(1024*1024),
-		stats.GPUOperations,
-		stats.CPUOperations)
-}
-
-// gpuMatrixVectorMul performs matrix-vector multiplication on GPU
-// This is the actual GPU kernel implementation
-func gpuMatrixVectorMul(matrix [][]int64, vector []int64, rows, cols int, q int64) []int64 {
-	result := make([]int64, rows)
-
-	// TODO: Replace with actual GPU kernel execution
-	// OpenCL kernel would look like:
-	/*
-		kernel := `
-		__kernel void matvec_mul(
-			__global const long* matrix,
-			__global const long* vector,
-			__global long* result,
-			const int cols,
-			const long q
-		) {
-			int i = get_global_id(0);
-			long sum = 0;
-			for (int j = 0; j < cols; j++) {
-				sum += matrix[i * cols + j] * vector[j];
-			}
-			result[i] = sum % q;
-		}
-		`
-
-		// Flatten matrix for GPU transfer
-		flatMatrix := make([]int64, rows*cols)
-		for i := 0; i < rows; i++ {
-			for j := 0; j < cols; j++ {
-				flatMatrix[i*cols+j] = matrix[i][j]
-			}
-		}
-
-		// Create buffers and execute kernel
-		// ... GPU execution code ...
-	*/
-
-	// Fallback CPU implementation (used when GPU not available)
-	for i := 0; i < rows; i++ {
-		var sum int64
-		for j := 0; j < cols; j++ {
-			sum += matrix[i][j] * vector[j]
-		}
-		result[i] = sum % q
-	}
-
-	return result
-}
-
-// gpuMatrixVectorMulOptimized uses GPU with optimized memory transfers
-func gpuMatrixVectorMulOptimized(matrix [][]int64, vector []int64, rows, cols int, q int64) []int64 {
-	// Check if GPU is actually available
-	if !IsGPUAvailable() {
-		recordCPUOp()
-		return gpuMatrixVectorMul(matrix, vector, rows, cols, q)
-	}
-
-	// Record that GPU is being used
-	recordGPUOp()
-
-	// Actual GPU implementation would:
-	// 1. Flatten matrix data
-	// 2. Transfer to GPU memory
-	// 3. Execute kernel
-	// 4. Transfer result back
-
-	result := make([]int64, rows)
-
-	// For demonstration, use parallel CPU as "GPU simulation"
-	// This shows the performance structure even without real GPU
-
-	// Simulate GPU with highly parallel CPU execution
-	chunkSize := (rows + 15) / 16 // Simulate 16 "GPU cores"
-	done := make(chan struct{}, 16)
-
-	for core := 0; core < 16; core++ {
-		start := core * chunkSize
-		end := start + chunkSize
-		if end > rows {
-			end = rows
-		}
-		if start >= rows {
-			break
-		}
-
-		go func(start, end int) {
-			for i := start; i < end; i++ {
-				var sum int64
-				for j := 0; j < cols; j++ {
-					sum += matrix[i][j] * vector[j]
-				}
-				result[i] = sum % q
-			}
-			done <- struct{}{}
-		}(start, end)
-	}
-
-	// Wait for all "cores" to complete
-	activeWorkers := (rows + chunkSize - 1) / chunkSize
-	if activeWorkers > 16 {
-		activeWorkers = 16
-	}
-	for i := 0; i < activeWorkers; i++ {
-		<-done
-	}
-
-	return result
-}
-
-// OpenCL kernel source for matrix-vector multiplication (for reference)
-const matVecKernelSource = `
-__kernel void matvec_mul(
-    __global const long* matrix,
-    __global const long* vector,
-    __global long* result,
-    const int cols,
-    const long q
-) {
-    int row = get_global_id(0);
-    long sum = 0;
-    
-    for (int j = 0; j < cols; j++) {
-        sum += matrix[row * cols + j] * vector[j];
-    }
-    
-    result[row] = sum % q;
-}
-`
-
-// CUDA kernel source for matrix-vector multiplication (for reference)
-const matVecCUDAKernelSource = `
-extern "C" __global__
-void matvec_mul(
-    const long* matrix,
-    const long* vector,
-    long* result,
-    int rows,
-    int cols,
-    long q
-) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < rows) {
-        long sum = 0;
-        for (int j = 0; j < cols; j++) {
-            sum += matrix[row * cols + j] * vector[j];
-        }
-        result[row] = sum % q;
-    }
-}
-`

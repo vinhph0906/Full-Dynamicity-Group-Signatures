@@ -2,6 +2,7 @@ package lattice
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math"
 	"math/big"
 	"runtime"
@@ -50,6 +51,15 @@ func SetMaxWorkers(workers int) {
 // SetUseGPU enables or disables GPU acceleration for matrix operations
 func SetUseGPU(enabled bool) {
 	UseGPU = enabled
+	if enabled {
+		// Try to initialize GPU when enabled
+		err := InitGPU()
+		if err == nil {
+			fmt.Println("[GPU] GPU acceleration enabled")
+		} else {
+			fmt.Println("[GPU] GPU not available, using CPU")
+		}
+	}
 }
 
 // SetGPUThreshold sets the minimum matrix size for GPU acceleration
@@ -456,6 +466,16 @@ func (m *Matrix) MatMul(other *Matrix) *Matrix {
 
 	result := NewMatrix(m.Rows, other.Cols, m.Q)
 
+	// Use GPU if enabled and matrices are large enough
+	if UseGPU && IsGPUAvailable() && m.Rows >= GPUThreshold && other.Cols >= GPUThreshold {
+		gpuResult, err := gpuMatrixMatrixMul(m.Data, other.Data, m.Q)
+		if err == nil {
+			result.Data = gpuResult
+			return result
+		}
+		// Fall through to CPU on error
+	}
+
 	// Use concurrent multiplication for larger matrices
 	if m.Rows >= ConcurrencyThresholdMatMul {
 		return m.matMulConcurrent(other)
@@ -577,8 +597,13 @@ func (m *Matrix) mulGPUInto(v *Vector, dst *Vector) {
 	}
 
 	// GPU is available - use GPU-accelerated computation
-	resultData := gpuMatrixVectorMulOptimized(m.Data, v.Data, m.Rows, m.Cols, m.Q)
+	resultData, err := gpuMatrixVectorMul(m.Data, v.Data, m.Q)
+	if err != nil {
+		// Fallback to CPU on error
+		m.mulConcurrentInto(v, dst)
+		return
+	}
 
-	// Copy result to destination vector
+	// Copy result to destination (GPU already applied modular reduction)
 	copy(dst.Data, resultData)
 }
