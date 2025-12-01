@@ -3,6 +3,7 @@ package lattice
 import (
 	"crypto/rand"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"runtime"
@@ -234,10 +235,10 @@ func (m *Matrix) MulInto(v *Vector, dst *Vector) {
 	// Only use GPU for matrix-matrix multiplication with extremely large matrices
 	// Threshold disabled (effectively infinite) - CPU concurrent is faster
 	// totalOps := int64(m.Rows) * int64(m.Cols)
-	// if UseGPU && totalOps > 10000000000 { // 10 billion - effectively disabled
-	// 	m.mulGPUInto(v, dst)
-	// 	return
-	// }
+	if UseGPU { // 10 billion - effectively disabled
+		m.mulGPUInto(v, dst)
+		return
+	}
 
 	// Use concurrent multiplication for larger matrices
 	if m.Rows >= ConcurrencyThresholdMulVec {
@@ -602,7 +603,7 @@ func (m *Matrix) mulGPUInto(v *Vector, dst *Vector) {
 	resultData, err := gpuMatrixVectorMul(m.Data, v.Data, m.Q)
 	if err != nil {
 		// Fallback to CPU on error
-		m.mulConcurrentInto(v, dst)
+		log.Fatal("[GPU] Error during GPU matrix-vector multiplication: ", err)
 		return
 	}
 

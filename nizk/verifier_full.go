@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/vinhphamhuu/lattice-group-signature/lattice"
 	"golang.org/x/crypto/sha3"
@@ -57,7 +58,11 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 	witnessSize := equation.WitnessSize
 	rhoSize := 2 * params.NK
 
+	// Reusable buffer for syndrome computation (like prover does)
+	syndromeBuffer := lattice.NewVector(equation.M.Rows, params.Q)
+
 	for round := 0; round < params.Kappa; round++ {
+		runtime.GC()
 		// debug: show expected challenge per round
 		if Debug {
 			fmt.Printf("[debug] round %d challenge=%d\n", round, expectedChallenges[round])
@@ -150,7 +155,9 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 				rho3Resp.Data[i] = remaining.Data[offset+i]
 			}
 
-			syndrome := subtractVectorsMod(equation.M.Mul(z2), equation.U, params.Q)
+			// Use MulInto with reusable buffer for GPU efficiency
+			equation.M.MulInto(z2, syndromeBuffer)
+			syndrome := subtractVectorsMod(syndromeBuffer, equation.U, params.Q)
 			if syndrome == nil {
 				return fmt.Errorf("round %d: failed to compute linear relation", round)
 			}
@@ -222,9 +229,10 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 				rho2Resp.Data[i] = remaining.Data[offset+i]
 			}
 
-			syndrome := equation.M.Mul(rz)
+			// Use MulInto with reusable buffer for GPU efficiency
+			equation.M.MulInto(rz, syndromeBuffer)
 			{
-				recomputed := commitToSyndrome(eta, syndrome, rho1Resp, params)
+				recomputed := commitToSyndrome(eta, syndromeBuffer, rho1Resp, params)
 				if !vectorsEqualMod(recomputed, stored.C1, params.Q) {
 					if Debug {
 						show := 5
