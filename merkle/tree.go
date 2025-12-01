@@ -89,15 +89,108 @@ func (t *Tree) Update(index int, value *lattice.Vector) error {
 		return fmt.Errorf("index out of bounds: %d", index)
 	}
 
-	// Update the leaf
-	t.Leaves[index] = &Node{
-		Data: value,
+	t.ensureTreeInitialized()
+
+	leaf := t.ensureLeafNode(index)
+	leaf.Data = value
+
+	currentNode := leaf
+	currentIndex := index
+
+	for level := 0; level < t.Height; level++ {
+		siblingIndex := currentIndex ^ 1
+		var sibling *Node
+		if level == 0 {
+			sibling = t.ensureLeafNode(siblingIndex)
+		} else {
+			sibling = t.ensureInternalNode(level-1, siblingIndex)
+		}
+
+		parentIndex := currentIndex / 2
+		parent := t.ensureInternalNode(level, parentIndex)
+
+		if currentIndex%2 == 0 {
+			parent.Data = t.HashFunction.Hash(currentNode.Data, sibling.Data)
+			parent.Left = currentNode
+			parent.Right = sibling
+		} else {
+			parent.Data = t.HashFunction.Hash(sibling.Data, currentNode.Data)
+			parent.Left = sibling
+			parent.Right = currentNode
+		}
+
+		currentNode = parent
+		currentIndex = parentIndex
 	}
 
-	// Rebuild the tree (in practice, only update the path to root)
-	t.Root = t.BuildTree(t.Leaves)
+	if currentNode != nil {
+		t.Root = currentNode
+	}
 
 	return nil
+}
+
+func (t *Tree) ensureTreeInitialized() {
+	if t.Root != nil {
+		return
+	}
+
+	for i := 0; i < len(t.Leaves); i++ {
+		if t.Leaves[i] == nil {
+			t.Leaves[i] = &Node{Data: lattice.NewVector(t.HashFunction.NK, t.HashFunction.Q)}
+		}
+	}
+
+	t.BuildTree(t.Leaves)
+}
+
+func (t *Tree) ensureLeafNode(index int) *Node {
+	if index < 0 || index >= len(t.Leaves) {
+		return &Node{Data: lattice.NewVector(t.HashFunction.NK, t.HashFunction.Q)}
+	}
+
+	if t.Leaves[index] == nil {
+		t.Leaves[index] = &Node{Data: lattice.NewVector(t.HashFunction.NK, t.HashFunction.Q)}
+	}
+
+	return t.Leaves[index]
+}
+
+func (t *Tree) ensureInternalNode(level, index int) *Node {
+	if level < 0 {
+		return &Node{Data: lattice.NewVector(t.HashFunction.NK, t.HashFunction.Q)}
+	}
+
+	if level >= len(t.InternalNodes) {
+		t.InternalNodes = append(t.InternalNodes, make([]*Node, 1))
+	}
+
+	nodes := t.InternalNodes[level]
+	if nodes == nil {
+		nodes = make([]*Node, t.levelWidth(level))
+		t.InternalNodes[level] = nodes
+	}
+
+	if index >= len(nodes) {
+		newNodes := make([]*Node, index+1)
+		copy(newNodes, nodes)
+		nodes = newNodes
+		t.InternalNodes[level] = nodes
+	}
+
+	if nodes[index] == nil {
+		nodes[index] = &Node{Data: lattice.NewVector(t.HashFunction.NK, t.HashFunction.Q)}
+	}
+
+	return nodes[index]
+}
+
+func (t *Tree) levelWidth(level int) int {
+	remaining := t.Height - level - 1
+	if remaining < 0 {
+		remaining = 0
+	}
+	return 1 << remaining
 }
 
 // GetProof returns the Merkle proof (authentication path) for leaf at index
