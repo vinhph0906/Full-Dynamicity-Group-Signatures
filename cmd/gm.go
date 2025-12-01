@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/vinhphamhuu/lattice-group-signature/lattice"
 	"github.com/vinhphamhuu/lattice-group-signature/scheme"
 	"github.com/vinhphamhuu/lattice-group-signature/storage"
 )
@@ -116,6 +117,11 @@ This must be run before any other operations.`,
 		fmt.Println("\n1. Running GSetup (generating public parameters)...")
 		pp := scheme.GSetup(lambda, maxUsers)
 		fmt.Printf("   [OK] Public parameters generated (m=%d, q=%d bits)\n", pp.M, pp.Q)
+
+		// Show GPU status if enabled
+		if useGPU, _ := cmd.Flags().GetBool("use-gpu"); useGPU {
+			fmt.Printf("   [GPU] %s\n", lattice.GetGPUInfo())
+		}
 
 		// Step 2: GKgenGM - Generate Group Manager keys
 		fmt.Println("\n2. Running GKgenGM (generating GM keys)...")

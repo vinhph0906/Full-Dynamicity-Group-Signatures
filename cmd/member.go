@@ -327,9 +327,13 @@ Only the Tracing Manager can identify the signer.`,
 		}
 
 		// Save signature
+		tSave := time.Now()
 		if err := store.SaveSignature(sigID, sig); err != nil {
 			fmt.Printf("Error saving signature: %v\n", err)
 			os.Exit(1)
+		}
+		if os.Getenv("NIZK_PROFILE") == "1" {
+			fmt.Fprintf(os.Stderr, "[profile] SaveSignature: %v\n", time.Since(tSave))
 		}
 
 		// Save proof details if requested

@@ -98,13 +98,22 @@ func StringCommitment(message []byte, randomness *Vector, params *PublicParamete
 	}
 
 	A0, A1 := SplitMatrix(params.A, nk)
-	// Compute linear term in parallel: A0·r0 and A1·r1
-	var termA0, termA1 *Vector
 
-	termA0 = A0.Mul(r0)
-	termA1 = A1.Mul(r1)
+	// GPU-accelerated batch processing for A0·r0 and A1·r1
+	var termA *Vector
+	if UseGPU && params.N >= GPUThreshold {
+		// Use batch GPU multiplication
+		matrices := []*Matrix{A0, A1}
+		vectors := []*Vector{r0, r1}
+		results := BatchMatrixVectorMul(matrices, vectors)
+		termA = results[0].Add(results[1])
+	} else {
+		// Original CPU path
+		termA0 := A0.Mul(r0)
+		termA1 := A1.Mul(r1)
+		termA = termA0.Add(termA1)
+	}
 
-	termA := termA0.Add(termA1)
 	if prof {
 		tLin = time.Now()
 	}

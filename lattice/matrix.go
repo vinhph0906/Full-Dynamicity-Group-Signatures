@@ -18,6 +18,15 @@ var (
 	// For matrix-matrix multiplication: minimum number of rows
 	ConcurrencyThresholdMulVec = 32
 	ConcurrencyThresholdMatMul = 32
+
+	// UseGPU enables GPU acceleration for matrix operations
+	// When enabled, large matrix multiplications will be offloaded to GPU
+	// Requires CUDA or OpenCL support (currently uses CPU fallback if unavailable)
+	UseGPU = false
+
+	// GPUThreshold sets the minimum matrix size for using GPU acceleration
+	// Matrices smaller than this will use CPU to avoid GPU transfer overhead
+	GPUThreshold = 256
 )
 
 // getDefaultMaxWorkers returns a reasonable default for max workers
@@ -36,6 +45,19 @@ func SetMaxWorkers(workers int) {
 		workers = 1
 	}
 	MaxWorkers = workers
+}
+
+// SetUseGPU enables or disables GPU acceleration for matrix operations
+func SetUseGPU(enabled bool) {
+	UseGPU = enabled
+}
+
+// SetGPUThreshold sets the minimum matrix size for GPU acceleration
+func SetGPUThreshold(threshold int) {
+	if threshold < 1 {
+		threshold = 1
+	}
+	GPUThreshold = threshold
 }
 
 // Matrix represents a matrix over Zq
@@ -171,6 +193,11 @@ func (m *Matrix) Mul(v *Vector) *Vector {
 
 	result := NewVector(m.Rows, m.Q)
 
+	// Use GPU acceleration for very large matrices if enabled
+	if UseGPU && m.Rows >= GPUThreshold && m.Cols >= GPUThreshold {
+		return m.mulGPU(v)
+	}
+
 	// Use concurrent multiplication for larger matrices
 	if m.Rows >= ConcurrencyThresholdMulVec {
 		return m.mulConcurrent(v)
@@ -195,6 +222,12 @@ func (m *Matrix) MulInto(v *Vector, dst *Vector) {
 	}
 	if dst.Size != m.Rows {
 		panic("destination vector has wrong size")
+	}
+
+	// Use GPU acceleration for very large matrices if enabled
+	if UseGPU && m.Rows >= GPUThreshold && m.Cols >= GPUThreshold {
+		m.mulGPUInto(v, dst)
+		return
 	}
 
 	// Use concurrent multiplication for larger matrices
@@ -518,4 +551,34 @@ func SplitMatrix(A *Matrix, nk int) (*Matrix, *Matrix) {
 	}
 
 	return A0, A1
+}
+
+// mulGPU performs GPU-accelerated matrix-vector multiplication
+// Falls back to CPU if GPU is not available or initialization fails
+func (m *Matrix) mulGPU(v *Vector) *Vector {
+	result := NewVector(m.Rows, m.Q)
+	m.mulGPUInto(v, result)
+	return result
+}
+
+// mulGPUInto performs GPU-accelerated matrix-vector multiplication into dst
+// Uses actual GPU implementation when available, otherwise falls back to optimized CPU
+func (m *Matrix) mulGPUInto(v *Vector, dst *Vector) {
+	// Try to initialize GPU if not already done
+	if !gpuInitialized {
+		InitGPU()
+	}
+
+	// Check if GPU is available
+	if !IsGPUAvailable() {
+		// GPU not available, use optimized multi-core CPU implementation
+		m.mulConcurrentInto(v, dst)
+		return
+	}
+
+	// GPU is available - use GPU-accelerated computation
+	resultData := gpuMatrixVectorMulOptimized(m.Data, v.Data, m.Rows, m.Cols, m.Q)
+
+	// Copy result to destination vector
+	copy(dst.Data, resultData)
 }
