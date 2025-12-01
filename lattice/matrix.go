@@ -52,13 +52,8 @@ func SetMaxWorkers(workers int) {
 func SetUseGPU(enabled bool) {
 	UseGPU = enabled
 	if enabled {
-		// Try to initialize GPU when enabled
-		err := InitGPU()
-		if err == nil {
-			fmt.Println("[GPU] GPU acceleration enabled")
-		} else {
-			fmt.Println("[GPU] GPU not available, using CPU")
-		}
+		// Use lazy initialization - GPU will be initialized when first needed
+		fmt.Println("[GPU] GPU acceleration enabled (lazy init)")
 	}
 }
 
@@ -234,11 +229,15 @@ func (m *Matrix) MulInto(v *Vector, dst *Vector) {
 		panic("destination vector has wrong size")
 	}
 
-	// Use GPU acceleration for very large matrices if enabled
-	if UseGPU && m.Rows >= GPUThreshold && m.Cols >= GPUThreshold {
-		m.mulGPUInto(v, dst)
-		return
-	}
+	// GPU is NOT beneficial for matrix-vector multiplication in this codebase
+	// The buffer allocation overhead exceeds the compute benefit
+	// Only use GPU for matrix-matrix multiplication with extremely large matrices
+	// Threshold disabled (effectively infinite) - CPU concurrent is faster
+	// totalOps := int64(m.Rows) * int64(m.Cols)
+	// if UseGPU && totalOps > 10000000000 { // 10 billion - effectively disabled
+	// 	m.mulGPUInto(v, dst)
+	// 	return
+	// }
 
 	// Use concurrent multiplication for larger matrices
 	if m.Rows >= ConcurrencyThresholdMulVec {
@@ -466,8 +465,11 @@ func (m *Matrix) MatMul(other *Matrix) *Matrix {
 
 	result := NewMatrix(m.Rows, other.Cols, m.Q)
 
-	// Use GPU if enabled and matrices are large enough
-	if UseGPU && IsGPUAvailable() && m.Rows >= GPUThreshold && other.Cols >= GPUThreshold {
+	// Use GPU only for extremely large matrix multiplications where GPU overhead is worth it
+	// GPU beneficial when total operations > 1B (1 billion) - M * N * K > 1,000,000,000
+	// For typical NIZK operations (small matrices), CPU is faster due to lower overhead
+	totalOps := int64(m.Rows) * int64(m.Cols) * int64(other.Cols)
+	if UseGPU && IsGPUAvailable() && totalOps > 1000000000 {
 		gpuResult, err := gpuMatrixMatrixMul(m.Data, other.Data, m.Q)
 		if err == nil {
 			result.Data = gpuResult

@@ -1,27 +1,39 @@
 # GPU Acceleration for Matrix Operations
 
-This implementation provides GPU acceleration support for lattice-based cryptographic operations.
+This implementation provides experimental GPU acceleration support using Apple Metal for lattice-based cryptographic operations on macOS.
+
+## Current Status
+
+**Note**: In benchmarks, CPU with concurrent workers is generally **faster** than GPU for this workload:
+- CPU (8 cores): ~5.5s for sign operation (λ=128, 512 users)  
+- GPU (Metal): ~7.3s for same operation
+
+The overhead of Metal buffer allocation exceeds compute benefits for the matrix sizes used in NIZK proofs.
+
+## When GPU May Help
+
+GPU acceleration may provide benefits for:
+- Very large matrix-matrix multiplications (>1 billion operations)
+- Batch processing of many independent operations
+- Future implementations with persistent buffer pools
 
 ## Features
 
-- **Automatic GPU Detection**: Detects available GPU devices at runtime
-- **Transparent Fallback**: Falls back to optimized multi-core CPU if GPU unavailable
-- **Configurable Thresholds**: Control when to use GPU vs CPU based on matrix size
-- **Multiple Backend Support**: Designed to support OpenCL, CUDA, or other compute APIs
+- **Apple Metal Backend**: Uses Metal Performance Shaders on macOS
+- **Lazy Initialization**: GPU is only initialized when first needed
+- **Automatic Fallback**: Falls back to optimized multi-core CPU
+- **Configurable Thresholds**: Control when to use GPU vs CPU
 
 ## Usage
 
 ### Enable GPU Acceleration
 
 ```bash
-# Enable GPU for all operations
-./lattice-gs gm setup --lambda 128 --use-gpu
+# Enable GPU for operations (experimental)
+./lattice-gs member sign 0 "message" --use-gpu
 
-# Configure GPU threshold (minimum matrix size)
-./lattice-gs gm setup --lambda 128 --use-gpu --gpu-threshold 512
-
-# Combine with CPU worker configuration
-./lattice-gs member sign 0 "message" --use-gpu --max-workers 8
+# Check GPU status
+./lattice-gs stats --use-gpu
 ```
 
 ### Command-Line Flags

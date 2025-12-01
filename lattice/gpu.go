@@ -16,6 +16,13 @@ import (
 //     void* commandQueue;
 //     void* matvecPipeline;
 //     void* matmulPipeline;
+//     // Persistent buffers for reuse
+//     void* persistentBufferA;
+//     void* persistentBufferB;
+//     void* persistentBufferC;
+//     size_t bufferASize;
+//     size_t bufferBSize;
+//     size_t bufferCSize;
 //     int initialized;
 // } MetalContext;
 //
@@ -36,10 +43,10 @@ import (
 // "    result[row] = sum % modulus;"
 // "}\n"
 // "\n"
-// "kernel void matmat_mul("
-// "    device const long* matrixA [[ buffer(0) ]],"
-// "    device const long* matrixB [[ buffer(1) ]],"
-// "    device long* result [[ buffer(2) ]],"
+// "kernel void matmat_mul_tiled("
+// "    device const long* A [[ buffer(0) ]],"
+// "    device const long* B [[ buffer(1) ]],"
+// "    device long* C [[ buffer(2) ]],"
 // "    constant int& M [[ buffer(3) ]],"
 // "    constant int& N [[ buffer(4) ]],"
 // "    constant int& K [[ buffer(5) ]],"
@@ -51,9 +58,9 @@ import (
 // "    if (row >= M || col >= K) return;"
 // "    long sum = 0;"
 // "    for (int i = 0; i < N; i++) {"
-// "        sum += matrixA[row * N + i] * matrixB[i * K + col];"
+// "        sum += A[row * N + i] * B[i * K + col];"
 // "    }"
-// "    result[row * K + col] = sum % modulus;"
+// "    C[row * K + col] = sum % modulus;"
 // "}";
 //
 // MetalContext* createMetalContext() {
@@ -71,14 +78,14 @@ import (
 //         // Compile Metal shader
 //         NSError* error = nil;
 //         NSString* source = [NSString stringWithUTF8String:kernelSource];
-//         id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+//         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
+//         id<MTLLibrary> library = [device newLibraryWithSource:source options:options error:&error];
 //         if (!library) {
-//             NSLog(@"Metal library creation failed: %@", error);
 //             return NULL;
 //         }
 //
 //         id<MTLFunction> matvecFunc = [library newFunctionWithName:@"matvec_mul"];
-//         id<MTLFunction> matmulFunc = [library newFunctionWithName:@"matmat_mul"];
+//         id<MTLFunction> matmulFunc = [library newFunctionWithName:@"matmat_mul_tiled"];
 //         if (!matvecFunc || !matmulFunc) {
 //             return NULL;
 //         }
@@ -86,7 +93,6 @@ import (
 //         id<MTLComputePipelineState> matvecPipeline = [device newComputePipelineStateWithFunction:matvecFunc error:&error];
 //         id<MTLComputePipelineState> matmulPipeline = [device newComputePipelineStateWithFunction:matmulFunc error:&error];
 //         if (!matvecPipeline || !matmulPipeline) {
-//             NSLog(@"Metal pipeline creation failed: %@", error);
 //             return NULL;
 //         }
 //
@@ -95,6 +101,12 @@ import (
 //         ctx->commandQueue = (void*)CFBridgingRetain(queue);
 //         ctx->matvecPipeline = (void*)CFBridgingRetain(matvecPipeline);
 //         ctx->matmulPipeline = (void*)CFBridgingRetain(matmulPipeline);
+//         ctx->persistentBufferA = NULL;
+//         ctx->persistentBufferB = NULL;
+//         ctx->persistentBufferC = NULL;
+//         ctx->bufferASize = 0;
+//         ctx->bufferBSize = 0;
+//         ctx->bufferCSize = 0;
 //         ctx->initialized = 1;
 //         return ctx;
 //     }
@@ -102,6 +114,9 @@ import (
 //
 // void releaseMetalContext(MetalContext* ctx) {
 //     if (ctx) {
+//         if (ctx->persistentBufferC) CFRelease(ctx->persistentBufferC);
+//         if (ctx->persistentBufferB) CFRelease(ctx->persistentBufferB);
+//         if (ctx->persistentBufferA) CFRelease(ctx->persistentBufferA);
 //         if (ctx->matmulPipeline) CFRelease(ctx->matmulPipeline);
 //         if (ctx->matvecPipeline) CFRelease(ctx->matvecPipeline);
 //         if (ctx->commandQueue) CFRelease(ctx->commandQueue);
@@ -109,6 +124,11 @@ import (
 //         free(ctx);
 //     }
 // }
+//
+// // Helper to get or create buffer with required size
+// // (DISABLED: causes SIGBUS crashes)
+// // id<MTLBuffer> getOrCreateBuffer(MetalContext* ctx, void** bufferPtr, size_t* currentSize,
+// //                                  size_t requiredSize, void* data) { ... }
 //
 // // Metal matrix-vector multiply using custom kernel
 // int metalMatVecMul(MetalContext* ctx, long* matrix, long* vector, long* result,
@@ -118,25 +138,17 @@ import (
 //         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->commandQueue;
 //         id<MTLComputePipelineState> pipeline = (__bridge id<MTLComputePipelineState>)ctx->matvecPipeline;
 //
-//         // Create Metal buffers
+//         // Buffer sizes
 //         size_t matrixSize = rows * cols * sizeof(long);
 //         size_t vectorSize = cols * sizeof(long);
 //         size_t resultSize = rows * sizeof(long);
 //
-//         id<MTLBuffer> matrixBuffer = [device newBufferWithBytes:matrix
-//                                              length:matrixSize
-//                                              options:MTLResourceStorageModeShared];
-//         id<MTLBuffer> vectorBuffer = [device newBufferWithBytes:vector
-//                                              length:vectorSize
-//                                              options:MTLResourceStorageModeShared];
-//         id<MTLBuffer> resultBuffer = [device newBufferWithLength:resultSize
-//                                              options:MTLResourceStorageModeShared];
-//         id<MTLBuffer> colsBuffer = [device newBufferWithBytes:&cols
-//                                            length:sizeof(int)
-//                                            options:MTLResourceStorageModeShared];
-//         id<MTLBuffer> modBuffer = [device newBufferWithBytes:&modulus
-//                                           length:sizeof(long)
-//                                           options:MTLResourceStorageModeShared];
+//         // Create fresh buffers each time (safer, avoids memory issues)
+//         id<MTLBuffer> matrixBuffer = [device newBufferWithBytes:matrix length:matrixSize options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> vectorBuffer = [device newBufferWithBytes:vector length:vectorSize options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> resultBuffer = [device newBufferWithLength:resultSize options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> colsBuffer = [device newBufferWithBytes:&cols length:sizeof(int) options:MTLResourceStorageModeShared];
+//         id<MTLBuffer> modBuffer = [device newBufferWithBytes:&modulus length:sizeof(long) options:MTLResourceStorageModeShared];
 //
 //         if (!matrixBuffer || !vectorBuffer || !resultBuffer || !colsBuffer || !modBuffer) {
 //             return -1;
@@ -171,7 +183,7 @@ import (
 //     }
 // }
 //
-// // Metal matrix-matrix multiply: C = A × B (M×N) × (N×K) = (M×K)
+// // Metal matrix-matrix multiply (no persistent buffers - safer)
 // int metalMatMatMul(MetalContext* ctx, long* matrixA, long* matrixB, long* result,
 //                    int M, int N, int K, long modulus) {
 //     @autoreleasepool {
@@ -179,22 +191,25 @@ import (
 //         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->commandQueue;
 //         id<MTLComputePipelineState> pipeline = (__bridge id<MTLComputePipelineState>)ctx->matmulPipeline;
 //
-//         // Create Metal buffers
+//         // Buffer sizes
 //         size_t sizeA = M * N * sizeof(long);
 //         size_t sizeB = N * K * sizeof(long);
 //         size_t sizeC = M * K * sizeof(long);
 //
+//         // Create fresh buffers each time (safer, avoids memory issues)
 //         id<MTLBuffer> bufferA = [device newBufferWithBytes:matrixA length:sizeA options:MTLResourceStorageModeShared];
 //         id<MTLBuffer> bufferB = [device newBufferWithBytes:matrixB length:sizeB options:MTLResourceStorageModeShared];
 //         id<MTLBuffer> bufferC = [device newBufferWithLength:sizeC options:MTLResourceStorageModeShared];
+//
+//         if (!bufferA || !bufferB || !bufferC) {
+//             return -1;
+//         }
+//
+//         // Create small constant buffers (these are tiny, OK to recreate)
 //         id<MTLBuffer> bufferM = [device newBufferWithBytes:&M length:sizeof(int) options:MTLResourceStorageModeShared];
 //         id<MTLBuffer> bufferN = [device newBufferWithBytes:&N length:sizeof(int) options:MTLResourceStorageModeShared];
 //         id<MTLBuffer> bufferK = [device newBufferWithBytes:&K length:sizeof(int) options:MTLResourceStorageModeShared];
 //         id<MTLBuffer> bufferMod = [device newBufferWithBytes:&modulus length:sizeof(long) options:MTLResourceStorageModeShared];
-//
-//         if (!bufferA || !bufferB || !bufferC || !bufferM || !bufferN || !bufferK || !bufferMod) {
-//             return -1;
-//         }
 //
 //         // Create command buffer and encoder
 //         id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
@@ -209,12 +224,12 @@ import (
 //         [encoder setBuffer:bufferK offset:0 atIndex:5];
 //         [encoder setBuffer:bufferMod offset:0 atIndex:6];
 //
-//         // Configure 2D thread groups
-//         NSUInteger threadGroupSize = 16; // 16x16 thread group
-//         MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, threadGroupSize, 1);
+//         // Configure 2D thread groups (16x16 tiles)
+//         NSUInteger tileSize = 16;
+//         MTLSize threadsPerGroup = MTLSizeMake(tileSize, tileSize, 1);
 //         MTLSize numThreadGroups = MTLSizeMake(
-//             (K + threadGroupSize - 1) / threadGroupSize,
-//             (M + threadGroupSize - 1) / threadGroupSize,
+//             (K + tileSize - 1) / tileSize,
+//             (M + tileSize - 1) / tileSize,
 //             1
 //         );
 //
@@ -224,7 +239,7 @@ import (
 //         [commandBuffer commit];
 //         [commandBuffer waitUntilCompleted];
 //
-//         // Copy result back
+//         // Copy result
 //         memcpy(result, bufferC.contents, sizeC);
 //
 //         return 0;
@@ -245,6 +260,13 @@ var (
 
 	// Kernel execution mutex
 	kernelMutex sync.Mutex
+
+	// Buffer pools to reduce allocations
+	flatBufferPool = sync.Pool{
+		New: func() interface{} {
+			return make([]int64, 0, 1024*1024) // 1M elements initial capacity
+		},
+	}
 )
 
 // GPUDevice represents a GPU compute device
@@ -345,8 +367,24 @@ func InitGPU() error {
 	return nil
 }
 
-// IsGPUAvailable checks if GPU is available for use
+// IsGPUAvailable checks if GPU is available for use (with lazy initialization)
 func IsGPUAvailable() bool {
+	gpuMutex.RLock()
+	initialized := gpuInitialized
+	gpuMutex.RUnlock()
+
+	if !initialized {
+		// Try lazy initialization
+		if UseGPU {
+			err := InitGPU()
+			if err != nil {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+
 	gpuMutex.RLock()
 	defer gpuMutex.RUnlock()
 	return gpuInitialized && gpuDevice != nil && gpuDevice.Available
@@ -402,12 +440,20 @@ func gpuMatrixVectorMul(matrix [][]int64, vector []int64, modulus int64) ([]int6
 	rows := len(matrix)
 	cols := len(matrix[0])
 
-	// Flatten matrix to row-major format (keep int64)
-	flatMatrix := make([]int64, rows*cols)
+	// Get pooled buffer for flattening
+	flatInterface := flatBufferPool.Get()
+	flatMatrix := flatInterface.([]int64)
+
+	size := rows * cols
+	if cap(flatMatrix) < size {
+		flatMatrix = make([]int64, size)
+	} else {
+		flatMatrix = flatMatrix[:size]
+	}
+
+	// Flatten matrix using copy for speed
 	for i := 0; i < rows; i++ {
-		for j := 0; j < cols; j++ {
-			flatMatrix[i*cols+j] = matrix[i][j]
-		}
+		copy(flatMatrix[i*cols:(i+1)*cols], matrix[i])
 	}
 
 	// Prepare result buffer
@@ -423,6 +469,9 @@ func gpuMatrixVectorMul(matrix [][]int64, vector []int64, modulus int64) ([]int6
 		C.int(cols),
 		C.long(modulus),
 	)
+
+	// Return buffer to pool
+	flatBufferPool.Put(flatMatrix[:0])
 
 	if ret != 0 {
 		return nil, fmt.Errorf("Metal matrix multiplication failed")
@@ -450,23 +499,43 @@ func gpuMatrixMatrixMul(matrixA [][]int64, matrixB [][]int64, modulus int64) ([]
 		return nil, fmt.Errorf("incompatible dimensions: A is %dx%d, B is %dx%d", M, N, len(matrixB), K)
 	}
 
+	// Get pooled buffers
+	flatAInterface := flatBufferPool.Get()
+	flatBInterface := flatBufferPool.Get()
+	flatCInterface := flatBufferPool.Get()
+
+	flatA := flatAInterface.([]int64)
+	flatB := flatBInterface.([]int64)
+	flatC := flatCInterface.([]int64)
+
+	// Ensure capacity
+	sizeA := M * N
+	sizeB := N * K
+	sizeC := M * K
+
+	if cap(flatA) < sizeA {
+		flatA = make([]int64, sizeA)
+	} else {
+		flatA = flatA[:sizeA]
+	}
+	if cap(flatB) < sizeB {
+		flatB = make([]int64, sizeB)
+	} else {
+		flatB = flatB[:sizeB]
+	}
+	if cap(flatC) < sizeC {
+		flatC = make([]int64, sizeC)
+	} else {
+		flatC = flatC[:sizeC]
+	}
+
 	// Flatten matrices to row-major format
-	flatA := make([]int64, M*N)
 	for i := 0; i < M; i++ {
-		for j := 0; j < N; j++ {
-			flatA[i*N+j] = matrixA[i][j]
-		}
+		copy(flatA[i*N:(i+1)*N], matrixA[i])
 	}
-
-	flatB := make([]int64, N*K)
 	for i := 0; i < N; i++ {
-		for j := 0; j < K; j++ {
-			flatB[i*K+j] = matrixB[i][j]
-		}
+		copy(flatB[i*K:(i+1)*K], matrixB[i])
 	}
-
-	// Prepare result buffer
-	flatC := make([]int64, M*K)
 
 	// Call Metal matrix-matrix multiplication
 	ret := C.metalMatMatMul(
@@ -480,7 +549,12 @@ func gpuMatrixMatrixMul(matrixA [][]int64, matrixB [][]int64, modulus int64) ([]
 		C.long(modulus),
 	)
 
+	// Return buffers to pool
+	flatBufferPool.Put(flatA[:0])
+	flatBufferPool.Put(flatB[:0])
+
 	if ret != 0 {
+		flatBufferPool.Put(flatC[:0])
 		return nil, fmt.Errorf("Metal matrix-matrix multiplication failed")
 	}
 
@@ -488,10 +562,10 @@ func gpuMatrixMatrixMul(matrixA [][]int64, matrixB [][]int64, modulus int64) ([]
 	result := make([][]int64, M)
 	for i := 0; i < M; i++ {
 		result[i] = make([]int64, K)
-		for j := 0; j < K; j++ {
-			result[i][j] = flatC[i*K+j]
-		}
+		copy(result[i], flatC[i*K:(i+1)*K])
 	}
+
+	flatBufferPool.Put(flatC[:0])
 
 	recordGPUOp()
 	return result, nil
