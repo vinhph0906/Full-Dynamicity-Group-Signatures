@@ -1,9 +1,13 @@
 package nizk
 
 import (
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"os"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vinhphamhuu/lattice-group-signature/lattice"
@@ -121,105 +125,153 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 
 	secrets := make([]roundSecret, params.Kappa)
 
-	// Pre-allocate reusable buffer for M·r_z to reduce allocations
-	syndromeBuffer := lattice.NewVector(equation.M.Rows, params.Q)
+	workerCount := lattice.MaxWorkers
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > params.Kappa {
+		workerCount = params.Kappa
+	}
+	if workerCount == 0 {
+		workerCount = 1
+	}
 
-	// Step 3: Commitment phase - κ rounds
+	jobCh := make(chan int, workerCount)
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	var abort atomic.Bool
+
+	worker := func() {
+		defer wg.Done()
+		syndromeBuffer := acquireSyndromeBuffer(equation.M.Rows, params.Q)
+		defer releaseSyndromeBuffer(syndromeBuffer)
+
+		for round := range jobCh {
+			if abort.Load() {
+				return
+			}
+			tRound := time.Now()
+			if prof && round%5 == 0 {
+				fmt.Printf("[ProverFull] Commitment round %d/%d [%s]...\n",
+					round+1, params.Kappa, time.Now().Format("15:04:05"))
+				printMemStats(fmt.Sprintf("Round %d", round+1))
+			}
+
+			tMask := time.Now()
+			rz, err := acquireMaskVector(equation.Z.Size, params.Q)
+			if err != nil {
+				recordWorkerError(&abort, errCh, fmt.Errorf("failed to sample mask vector: %w", err))
+				return
+			}
+			if prof {
+				fmt.Printf("  [Round %d] Mask generation: %v\n", round+1, time.Since(tMask))
+			}
+
+			tPerm := time.Now()
+			eta, err := generateFullPermutation(sternWitness, params)
+			if err != nil {
+				releaseMaskVector(rz)
+				recordWorkerError(&abort, errCh, fmt.Errorf("failed to sample permutation: %w", err))
+				return
+			}
+			if prof {
+				fmt.Printf("  [Round %d] Permutation generation: %v\n", round+1, time.Since(tPerm))
+			}
+
+			tRho := time.Now()
+			rho1, err := lattice.BinaryVector(2*params.NK, params.Q)
+			if err != nil {
+				releaseMaskVector(rz)
+				releasePermutation(eta)
+				recordWorkerError(&abort, errCh, fmt.Errorf("failed to sample rho1: %w", err))
+				return
+			}
+			rho2, err := lattice.BinaryVector(2*params.NK, params.Q)
+			if err != nil {
+				releaseMaskVector(rz)
+				releasePermutation(eta)
+				recordWorkerError(&abort, errCh, fmt.Errorf("failed to sample rho2: %w", err))
+				return
+			}
+			rho3, err := lattice.BinaryVector(2*params.NK, params.Q)
+			if err != nil {
+				releaseMaskVector(rz)
+				releasePermutation(eta)
+				recordWorkerError(&abort, errCh, fmt.Errorf("failed to sample rho3: %w", err))
+				return
+			}
+			if prof && round%5 == 0 {
+				fmt.Printf("  [Round %d] Rho sampling: %v\n", round+1, time.Since(tRho))
+			}
+
+			// Compute commitments following Stern protocol
+			tCommit := time.Now()
+			equation.M.MulInto(rz, syndromeBuffer)
+			c1 := commitToSyndrome(eta, syndromeBuffer, rho1, params)
+
+			maskWitness := createWitnessViewFromVector(rz, sternWitness)
+			if maskWitness == nil {
+				releaseMaskVector(rz)
+				releasePermutation(eta)
+				recordWorkerError(&abort, errCh, fmt.Errorf("failed to map mask to witness structure"))
+				return
+			}
+			gammaRz := applyFullPermutation(maskWitness, eta)
+			c2 := commitGamma(gammaRz, rho2, params)
+
+			gammaZ := applyFullPermutation(sternWitness, eta)
+			gammaZPlusRz := gammaZ.Add(gammaRz)
+			c3 := commitGamma(gammaZPlusRz, rho3, params)
+
+			proof.Commitments[round] = &CommitmentTriple{C1: c1, C2: c2, C3: c3}
+			secrets[round] = roundSecret{
+				mask:        rz,
+				permutation: eta,
+				rho1:        rho1,
+				rho2:        rho2,
+				rho3:        rho3,
+			}
+			if prof {
+				fmt.Printf("  [Round %d] Commitments: %v\n", round+1, time.Since(tCommit))
+				fmt.Printf("  [Round %d] Total round time: %v\n", round+1, time.Since(tRound))
+				printMemStats(fmt.Sprintf("After commitment round %d", round+1))
+			}
+		}
+	}
+
 	if prof {
 		fmt.Printf("[ProverFull] Step 3: Commitment phase - κ=%d rounds, witness_size=%d [%s]\n",
 			params.Kappa, equation.Z.Size, time.Now().Format("15:04:05"))
 	}
 	printMemStats("Before commitment phase")
 	tCommitStart := time.Now()
-	for round := 0; round < params.Kappa; round++ {
-		tRound := time.Now()
-		if prof && round%5 == 0 {
-			fmt.Printf("[ProverFull] Commitment round %d/%d [%s]...\n",
-				round+1, params.Kappa, time.Now().Format("15:04:05"))
-			printMemStats(fmt.Sprintf("Round %d", round+1))
-		}
+	for w := 0; w < workerCount; w++ {
+		wg.Add(1)
+		go worker()
+	}
 
-		tMask := time.Now()
-		rz, err := lattice.RandomVector(equation.Z.Size, params.Q)
+	go func() {
+		defer close(jobCh)
+		for round := 0; round < params.Kappa; round++ {
+			if abort.Load() {
+				return
+			}
+			jobCh <- round
+		}
+	}()
+
+	wg.Wait()
+	select {
+	case err := <-errCh:
 		if err != nil {
-			return nil, fmt.Errorf("failed to sample mask vector: %v", err)
+			return nil, err
 		}
-		if prof {
-			fmt.Printf("  [Round %d] Mask generation: %v\n", round+1, time.Since(tMask))
-		}
-
-		tPerm := time.Now()
-		eta, err := generateFullPermutation(sternWitness, params)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sample permutation: %v", err)
-		}
-		if prof {
-			fmt.Printf("  [Round %d] Permutation generation: %v\n", round+1, time.Since(tPerm))
-		}
-
-		tRho := time.Now()
-		rho1, err := lattice.BinaryVector(2*params.NK, params.Q)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sample rho1: %v", err)
-		}
-		rho2, err := lattice.BinaryVector(2*params.NK, params.Q)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sample rho2: %v", err)
-		}
-		rho3, err := lattice.BinaryVector(2*params.NK, params.Q)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sample rho3: %v", err)
-		}
-		if prof && round%5 == 0 {
-			fmt.Printf("  [Round %d] Rho sampling: %v\n", round+1, time.Since(tRho))
-		}
-
-		// Compute commitments following Stern protocol
-		// C1 = StringCommitment(φ(η) || M·r_z; ρ1)
-		tCommit := time.Now()
-		// Reuse syndromeBuffer to avoid allocation
-		equation.M.MulInto(rz, syndromeBuffer) // M·r_z into buffer
-		c1 := commitToSyndrome(eta, syndromeBuffer, rho1, params)
-
-		// C2 = StringCommitment(Γ_η(r_z); ρ2) - commits to permuted mask
-		maskWitness := createWitnessFromVector(rz, sternWitness)
-		if maskWitness == nil {
-			return nil, fmt.Errorf("failed to map mask to witness structure")
-		}
-		gammaRz := applyFullPermutation(maskWitness, eta)
-		c2 := commitGamma(gammaRz, rho2, params)
-
-		// C3 = StringCommitment(Γ_η(z + r_z); ρ3)
-		// Note: For linear permutation, Γ_η(z + r_z) = Γ_η(z) + Γ_η(r_z)
-		gammaZ := applyFullPermutation(sternWitness, eta)
-		gammaZPlusRz := gammaZ.Add(gammaRz)
-		c3 := commitGamma(gammaZPlusRz, rho3, params)
-
-		proof.Commitments[round] = &CommitmentTriple{C1: c1, C2: c2, C3: c3}
-		secrets[round] = roundSecret{
-			mask:        rz,
-			permutation: eta,
-			rho1:        rho1,
-			rho2:        rho2,
-			rho3:        rho3,
-		}
-		if prof {
-			fmt.Printf("  [Round %d] Commitments: %v\n", round+1, time.Since(tCommit))
-			fmt.Printf("  [Round %d] Total round time: %v\n", round+1, time.Since(tRound))
-			printMemStats(fmt.Sprintf("After commitment round %d", round+1))
-		}
-
-		// Force GC after EVERY round to prevent memory buildup
-		// Each round allocates ~16MB for rz vector
-		runtime.GC()
+	default:
 	}
 	if prof {
 		fmt.Printf("[ProverFull] Commitment phase completed in %v\n", time.Since(tCommitStart))
 	}
 	printMemStats("After commitment phase")
-
-	// Force GC before transcript phase
-	runtime.GC()
 
 	// Build Fiat-Shamir transcript after all commitments are available
 	if prof {
@@ -270,7 +322,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 		switch challenges[round] {
 		case 1:
 			tz := applyFullPermutation(sternWitness, eta)
-			tr := applyFullPermutation(createWitnessFromVector(rz, sternWitness), eta)
+			tr := applyFullPermutation(createWitnessViewFromVector(rz, sternWitness), eta)
 			response = packResponse1(tz, tr, rho2, rho3, params)
 
 		case 2:
@@ -283,6 +335,9 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 
 		// OPTIMIZATION: Store only the actual response for this challenge
 		proof.Responses[round] = response
+		releasePermutation(eta)
+		releaseMaskVector(rz)
+		secrets[round] = roundSecret{}
 		if prof {
 			fmt.Printf("  [Round %d] Response computed in %v\n", round+1, time.Since(tRespRound))
 		}
@@ -300,6 +355,87 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 }
 
 // Helper functions
+
+var (
+	maskVectorPool     = sync.Pool{New: func() any { return &lattice.Vector{} }}
+	syndromeVectorPool = sync.Pool{New: func() any { return &lattice.Vector{} }}
+)
+
+func acquireMaskVector(size int, q int64) (*lattice.Vector, error) {
+	vec := acquireVectorFromPool(&maskVectorPool, size, q)
+	if err := fillRandomVector(vec, q); err != nil {
+		releaseVectorToPool(&maskVectorPool, vec)
+		return nil, err
+	}
+	return vec, nil
+}
+
+func releaseMaskVector(v *lattice.Vector) {
+	releaseVectorToPool(&maskVectorPool, v)
+}
+
+func acquireSyndromeBuffer(size int, q int64) *lattice.Vector {
+	return acquireVectorFromPool(&syndromeVectorPool, size, q)
+}
+
+func releaseSyndromeBuffer(v *lattice.Vector) {
+	releaseVectorToPool(&syndromeVectorPool, v)
+}
+
+func acquireVectorFromPool(pool *sync.Pool, size int, q int64) *lattice.Vector {
+	if size < 0 {
+		size = 0
+	}
+	val := pool.Get()
+	var vec *lattice.Vector
+	if val == nil {
+		vec = lattice.NewVector(size, q)
+	} else {
+		vec = val.(*lattice.Vector)
+		if cap(vec.Data) < size {
+			vec.Data = make([]int64, size)
+		} else {
+			vec.Data = vec.Data[:size]
+		}
+		vec.Size = size
+		vec.Q = q
+	}
+	return vec
+}
+
+func releaseVectorToPool(pool *sync.Pool, v *lattice.Vector) {
+	if v == nil {
+		return
+	}
+	pool.Put(v)
+}
+
+func fillRandomVector(v *lattice.Vector, q int64) error {
+	if q <= 0 {
+		return fmt.Errorf("invalid modulus: %d", q)
+	}
+	modulus := big.NewInt(q)
+	for i := 0; i < v.Size; i++ {
+		val, err := rand.Int(rand.Reader, modulus)
+		if err != nil {
+			return err
+		}
+		v.Data[i] = val.Int64()
+	}
+	return nil
+}
+
+func recordWorkerError(abort *atomic.Bool, errCh chan<- error, err error) {
+	if err == nil {
+		return
+	}
+	if abort.CompareAndSwap(false, true) {
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
+}
 
 // computeMerkleIntermediateNodes computes v_i from leaf p up to root
 // Paper: v_ℓ = p (leaf), v_i = h_A(v_{i+1}, w_{i+1}) if j_{i+1}=0, else h_A(w_{i+1}, v_{i+1})

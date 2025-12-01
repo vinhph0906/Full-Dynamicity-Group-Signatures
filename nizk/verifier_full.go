@@ -31,9 +31,25 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 		return fmt.Errorf("expected %d commitment triples, got %d", params.Kappa, len(proof.Commitments))
 	}
 
-	equation, err := buildPublicEquation(statement, expectedRoot, params)
-	if err != nil {
-		return fmt.Errorf("failed to build public equation: %v", err)
+	var (
+		equation *UnifiedEquation
+		err      error
+	)
+	if key, ok := buildEquationCacheKey(params, expectedRoot); ok {
+		if cached, hit := verifierEquationCache.Get(key); hit {
+			equation = cached
+		} else {
+			equation, err = buildPublicEquation(statement, expectedRoot, params)
+			if err != nil {
+				return fmt.Errorf("failed to build public equation: %v", err)
+			}
+			verifierEquationCache.Add(key, equation)
+		}
+	} else {
+		equation, err = buildPublicEquation(statement, expectedRoot, params)
+		if err != nil {
+			return fmt.Errorf("failed to build public equation: %v", err)
+		}
 	}
 
 	// Ensure the Merkle root is bound in the transcript as part of the public instance
@@ -182,7 +198,7 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 				}
 			}
 
-			witnessZ2 := createWitnessFromVector(z2, dummyWitness)
+			witnessZ2 := createWitnessViewFromVector(z2, dummyWitness)
 			if witnessZ2 == nil {
 				return fmt.Errorf("round %d: failed to reconstruct witness for z2", round)
 			}
@@ -250,7 +266,7 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 				return fmt.Errorf("round %d: randomness not binary for challenge 3", round)
 			}
 
-			witnessRz := createWitnessFromVector(rz, dummyWitness)
+			witnessRz := createWitnessViewFromVector(rz, dummyWitness)
 			if witnessRz == nil {
 				return fmt.Errorf("round %d: failed to reconstruct witness for r_z", round)
 			}

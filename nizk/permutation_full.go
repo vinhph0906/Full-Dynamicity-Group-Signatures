@@ -2,179 +2,205 @@ package nizk
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/vinhphamhuu/lattice-group-signature/lattice"
 )
 
+var permutationPool = sync.Pool{New: func() any { return &Permutation{} }}
+
 // generateFullPermutation samples all block permutations used in Γ_η.
 func generateFullPermutation(sw *SternWitness, params *lattice.PublicParameters) (*Permutation, error) {
-	perm := &Permutation{}
+	perm := permutationPool.Get().(*Permutation)
+	if err := populatePermutation(perm, sw, params); err != nil {
+		releasePermutation(perm)
+		return nil, err
+	}
+	return perm, nil
+}
+
+func populatePermutation(perm *Permutation, sw *SternWitness, params *lattice.PublicParameters) error {
 	var err error
+	tempPair := make([]int, params.NK)
 
 	if sw.XExt != nil {
-		if perm.Bx, err = generateRandomPermutation(sw.XExt.Size); err != nil {
-			return nil, fmt.Errorf("failed to generate Bx: %v", err)
+		perm.Bx = ensurePermSlice(perm.Bx, sw.XExt.Size)
+		if err = fillRandomPermutation(perm.Bx); err != nil {
+			return fmt.Errorf("failed to generate Bx: %w", err)
 		}
+	} else {
+		perm.Bx = nil
 	}
 	if sw.PExt != nil {
-		if perm.Bp, err = generateRandomPermutation(sw.PExt.Size); err != nil {
-			return nil, fmt.Errorf("failed to generate Bp: %v", err)
+		perm.Bp = ensurePermSlice(perm.Bp, sw.PExt.Size)
+		if err = fillRandomPermutation(perm.Bp); err != nil {
+			return fmt.Errorf("failed to generate Bp: %w", err)
 		}
+	} else {
+		perm.Bp = nil
 	}
 
-	perm.Bj = make([][]int, len(sw.JExt))
+	perm.Bj = ensurePermMatrix(perm.Bj, len(sw.JExt))
 	for i := 0; i < len(sw.JExt); i++ {
-		if sw.JExt[i] != nil {
-			if perm.Bj[i], err = generateRandomPermutation(sw.JExt[i].Size); err != nil {
-				return nil, fmt.Errorf("failed to generate Bj[%d]: %v", i, err)
-			}
+		if sw.JExt[i] == nil {
+			perm.Bj[i] = nil
+			continue
+		}
+		perm.Bj[i] = ensurePermSlice(perm.Bj[i], sw.JExt[i].Size)
+		if err = fillRandomPermutation(perm.Bj[i]); err != nil {
+			return fmt.Errorf("failed to generate Bj[%d]: %w", i, err)
 		}
 	}
 
-	perm.Bv = make([][]int, len(sw.VExt))
+	perm.Bv = ensurePermMatrix(perm.Bv, len(sw.VExt))
 	for i := 0; i < len(sw.VExt); i++ {
-		if sw.VExt[i] != nil {
-			pairPerm, err := generateRandomPermutation(params.NK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to gen pair perm for Bv[%d]: %v", i, err)
-			}
-			perm.Bv[i] = make([]int, 2*params.NK)
-			for j := 0; j < params.NK; j++ {
-				dest := pairPerm[j]
-				perm.Bv[i][2*j] = 2 * dest
-				perm.Bv[i][2*j+1] = 2*dest + 1
-			}
+		if sw.VExt[i] == nil {
+			perm.Bv[i] = nil
+			continue
+		}
+		perm.Bv[i] = ensurePermSlice(perm.Bv[i], 2*params.NK)
+		if err = fillRandomPermutation(tempPair); err != nil {
+			return fmt.Errorf("failed to gen pair perm for Bv[%d]: %w", i, err)
+		}
+		for j := 0; j < params.NK; j++ {
+			dest := tempPair[j]
+			perm.Bv[i][2*j] = 2 * dest
+			perm.Bv[i][2*j+1] = 2*dest + 1
 		}
 	}
 
-	perm.Bw = make([][]int, len(sw.WExt))
+	perm.Bw = ensurePermMatrix(perm.Bw, len(sw.WExt))
 	for i := 0; i < len(sw.WExt); i++ {
-		if sw.WExt[i] != nil {
-			pairPerm, err := generateRandomPermutation(params.NK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to gen pair perm for Bw[%d]: %v", i, err)
-			}
-			perm.Bw[i] = make([]int, 2*params.NK)
-			for j := 0; j < params.NK; j++ {
-				dest := pairPerm[j]
-				perm.Bw[i][2*j] = 2 * dest
-				perm.Bw[i][2*j+1] = 2*dest + 1
-			}
+		if sw.WExt[i] == nil {
+			perm.Bw[i] = nil
+			continue
+		}
+		perm.Bw[i] = ensurePermSlice(perm.Bw[i], 2*params.NK)
+		if err = fillRandomPermutation(tempPair); err != nil {
+			return fmt.Errorf("failed to gen pair perm for Bw[%d]: %w", i, err)
+		}
+		for j := 0; j < params.NK; j++ {
+			dest := tempPair[j]
+			perm.Bw[i][2*j] = 2 * dest
+			perm.Bw[i][2*j+1] = 2*dest + 1
 		}
 	}
 
-	perm.BvHat = make([][]int, len(sw.VHatExt))
+	perm.BvHat = ensurePermMatrix(perm.BvHat, len(sw.VHatExt))
 	for level := 0; level < len(sw.VHatExt); level++ {
 		if sw.VHatExt[level] == nil {
+			perm.BvHat[level] = nil
 			continue
 		}
 		size := sw.VHatExt[level].Size
-		perm.BvHat[level] = make([]int, size)
+		perm.BvHat[level] = ensurePermSlice(perm.BvHat[level], size)
 		for k := 0; k < size; k++ {
 			perm.BvHat[level][k] = k
 		}
-		// Generate half-preserving permutation
-		// First half and second half each need their own independent pair permutation
 		if size == 4*params.NK {
-			// Generate random pair permutation for first half [0, 2nk)
-			pairPerm1, err := generateRandomPermutation(params.NK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate BvHat pair permutation 1: %v", err)
+			if err = fillRandomPermutation(tempPair); err != nil {
+				return fmt.Errorf("failed to generate BvHat pair permutation 1: %w", err)
 			}
 			for j := 0; j < params.NK; j++ {
-				dest := pairPerm1[j]
+				dest := tempPair[j]
 				perm.BvHat[level][2*j] = 2 * dest
 				perm.BvHat[level][2*j+1] = 2*dest + 1
 			}
-
-			// Generate random pair permutation for second half [2nk, 4nk)
-			pairPerm2, err := generateRandomPermutation(params.NK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate BvHat pair permutation 2: %v", err)
+			if err = fillRandomPermutation(tempPair); err != nil {
+				return fmt.Errorf("failed to generate BvHat pair permutation 2: %w", err)
 			}
 			base := 2 * params.NK
 			for j := 0; j < params.NK; j++ {
-				dest := pairPerm2[j]
+				dest := tempPair[j]
 				perm.BvHat[level][base+2*j] = base + 2*dest
 				perm.BvHat[level][base+2*j+1] = base + 2*dest + 1
 			}
 		}
 	}
 
-	perm.BwHat = make([][]int, len(sw.WHatExt))
+	perm.BwHat = ensurePermMatrix(perm.BwHat, len(sw.WHatExt))
 	for level := 0; level < len(sw.WHatExt); level++ {
 		if sw.WHatExt[level] == nil {
+			perm.BwHat[level] = nil
 			continue
 		}
 		size := sw.WHatExt[level].Size
-		// fmt.Printf("[DEBUG BwHat] level=%d, size=%d, 4*NK=%d, condition=%v\n", level, size, 4*params.NK, size == 4*params.NK)
-		perm.BwHat[level] = make([]int, size)
+		perm.BwHat[level] = ensurePermSlice(perm.BwHat[level], size)
 		for k := 0; k < size; k++ {
 			perm.BwHat[level][k] = k
 		}
-		// Generate half-preserving permutation
-		// First half and second half each need their own independent pair permutation
 		if size == 4*params.NK {
-			// Generate random pair permutation for first half [0, 2nk)
-			pairPerm1, err := generateRandomPermutation(params.NK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate BwHat pair permutation 1: %v", err)
+			if err = fillRandomPermutation(tempPair); err != nil {
+				return fmt.Errorf("failed to generate BwHat pair permutation 1: %w", err)
 			}
 			for j := 0; j < params.NK; j++ {
-				dest := pairPerm1[j]
+				dest := tempPair[j]
 				perm.BwHat[level][2*j] = 2 * dest
 				perm.BwHat[level][2*j+1] = 2*dest + 1
 			}
-			// Debug: check for duplicates in first half
-			seen := make(map[int]bool)
-			for i := 0; i < 2*params.NK; i++ {
-				if seen[perm.BwHat[level][i]] {
-					fmt.Printf("[DEBUG BwHat] level=%d, DUPLICATE in first half at i=%d, value=%d\n", level, i, perm.BwHat[level][i])
-				}
-				seen[perm.BwHat[level][i]] = true
-			}
-
-			// Generate random pair permutation for second half [2nk, 4nk)
-			pairPerm2, err := generateRandomPermutation(params.NK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate BwHat pair permutation 2: %v", err)
+			if err = fillRandomPermutation(tempPair); err != nil {
+				return fmt.Errorf("failed to generate BwHat pair permutation 2: %w", err)
 			}
 			base := 2 * params.NK
-			// fmt.Printf("[DEBUG BwHat] level=%d, base=%d, setting second half\n", level, base)
 			for j := 0; j < params.NK; j++ {
-				dest := pairPerm2[j]
+				dest := tempPair[j]
 				perm.BwHat[level][base+2*j] = base + 2*dest
 				perm.BwHat[level][base+2*j+1] = base + 2*dest + 1
 			}
-			// Debug: check for duplicates in whole array
-			seen2 := make(map[int]bool)
-			for i := 0; i < size; i++ {
-				if seen2[perm.BwHat[level][i]] {
-					fmt.Printf("[DEBUG BwHat] level=%d, DUPLICATE in full array at i=%d, value=%d\n", level, i, perm.BwHat[level][i])
-				}
-				seen2[perm.BwHat[level][i]] = true
-			}
-			// fmt.Printf("[DEBUG BwHat] level=%d, perm[%d]=%d, perm[%d]=%d\n", level, base, perm.BwHat[level][base], base+1, perm.BwHat[level][base+1])
 		}
 	}
 
 	if sw.R1Ext != nil {
-		if perm.Br1, err = generateRandomPermutation(sw.R1Ext.Size); err != nil {
-			return nil, fmt.Errorf("failed to generate Br1: %v", err)
+		perm.Br1 = ensurePermSlice(perm.Br1, sw.R1Ext.Size)
+		if err = fillRandomPermutation(perm.Br1); err != nil {
+			return fmt.Errorf("failed to generate Br1: %w", err)
 		}
+	} else {
+		perm.Br1 = nil
 	}
 	if sw.R2Ext != nil {
-		if perm.Br2, err = generateRandomPermutation(sw.R2Ext.Size); err != nil {
-			return nil, fmt.Errorf("failed to generate Br2: %v", err)
+		perm.Br2 = ensurePermSlice(perm.Br2, sw.R2Ext.Size)
+		if err = fillRandomPermutation(perm.Br2); err != nil {
+			return fmt.Errorf("failed to generate Br2: %w", err)
 		}
+	} else {
+		perm.Br2 = nil
 	}
 
-	perm.PiX = make([]int, 0)
-	perm.PiP = make([]int, 0)
-	perm.PiW = make([][]int, len(sw.WExt))
+	perm.PiX = nil
+	perm.PiP = nil
+	perm.PiW = ensurePermMatrix(perm.PiW, len(sw.WExt))
 	for i := range perm.PiW {
-		perm.PiW[i] = make([]int, 0)
+		perm.PiW[i] = nil
 	}
 
-	return perm, nil
+	return nil
+}
+
+func releasePermutation(perm *Permutation) {
+	if perm == nil {
+		return
+	}
+	permutationPool.Put(perm)
+}
+
+func ensurePermSlice(buf []int, size int) []int {
+	if size <= 0 {
+		return nil
+	}
+	if cap(buf) < size {
+		buf = make([]int, size)
+	} else {
+		buf = buf[:size]
+	}
+	return buf
+}
+
+func ensurePermMatrix(buf [][]int, length int) [][]int {
+	if cap(buf) < length {
+		buf = make([][]int, length)
+	} else {
+		buf = buf[:length]
+	}
+	return buf
 }

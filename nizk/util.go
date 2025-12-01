@@ -91,3 +91,78 @@ func createWitnessFromVector(v *lattice.Vector, template *SternWitness) *SternWi
 	}
 	return sw
 }
+
+// createWitnessViewFromVector maps v onto the SternWitness layout without copying data.
+// Each component reuses the backing array of v via slicing, so callers must ensure v
+// remains alive for as long as the returned witness is used.
+func createWitnessViewFromVector(v *lattice.Vector, template *SternWitness) *SternWitness {
+	if v == nil || template == nil {
+		return nil
+	}
+
+	sliceSegment := func(length int, offset *int) *lattice.Vector {
+		if length == 0 {
+			return nil
+		}
+		if *offset+length > v.Size {
+			length = v.Size - *offset
+		}
+		seg := &lattice.Vector{
+			Size: length,
+			Data: v.Data[*offset : *offset+length],
+			Q:    v.Q,
+		}
+		*offset += length
+		return seg
+	}
+
+	sw := &SternWitness{}
+	off := 0
+	if template.XExt != nil {
+		sw.XExt = sliceSegment(template.XExt.Size, &off)
+	}
+	if template.PExt != nil {
+		sw.PExt = sliceSegment(template.PExt.Size, &off)
+	}
+	if template.PHatExt != nil {
+		sw.PHatExt = sliceSegment(template.PHatExt.Size, &off)
+	}
+	if len(template.JExt) > 0 {
+		sw.JExt = make([]*lattice.Vector, len(template.JExt))
+		for i, jext := range template.JExt {
+			ln := 0
+			if jext != nil {
+				ln = jext.Size
+			}
+			sw.JExt[i] = sliceSegment(ln, &off)
+		}
+	}
+	if len(template.VExt) > 0 {
+		sw.VExt = make([]*lattice.Vector, len(template.VExt))
+		sw.VHatExt = make([]*lattice.Vector, len(template.VHatExt))
+		sw.WHatExt = make([]*lattice.Vector, len(template.WHatExt))
+
+		numVLevels := len(template.VExt)
+		for i := 0; i < numVLevels; i++ {
+			if template.VExt[i] != nil {
+				sw.VExt[i] = sliceSegment(template.VExt[i].Size, &off)
+			}
+			if i < len(template.VHatExt) && template.VHatExt[i] != nil {
+				sw.VHatExt[i] = sliceSegment(template.VHatExt[i].Size, &off)
+			}
+			if i < len(template.WHatExt) && template.WHatExt[i] != nil {
+				sw.WHatExt[i] = sliceSegment(template.WHatExt[i].Size, &off)
+			}
+		}
+		if numVLevels < len(template.WHatExt) && template.WHatExt[numVLevels] != nil {
+			sw.WHatExt[numVLevels] = sliceSegment(template.WHatExt[numVLevels].Size, &off)
+		}
+	}
+	if template.R1Ext != nil {
+		sw.R1Ext = sliceSegment(template.R1Ext.Size, &off)
+	}
+	if template.R2Ext != nil {
+		sw.R2Ext = sliceSegment(template.R2Ext.Size, &off)
+	}
+	return sw
+}

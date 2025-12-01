@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"runtime"
+	"sync"
 )
 
 // Configuration for concurrent matrix operations
@@ -19,6 +20,8 @@ var (
 	ConcurrencyThresholdMulVec = 32
 	ConcurrencyThresholdMatMul = 32
 )
+
+const rowChunkSize = 64
 
 // getDefaultMaxWorkers returns a reasonable default for max workers
 func getDefaultMaxWorkers() int {
@@ -217,76 +220,58 @@ func (m *Matrix) MulInto(v *Vector, dst *Vector) {
 // Spawns goroutines to compute rows in parallel with configurable max workers
 func (m *Matrix) mulConcurrent(v *Vector) *Vector {
 	result := NewVector(m.Rows, m.Q)
-
-	// Use configured max workers
-	maxWorkers := MaxWorkers
-	if m.Rows < maxWorkers {
-		maxWorkers = m.Rows
-	}
-
-	// Channel to limit concurrent goroutines
-	semaphore := make(chan struct{}, maxWorkers)
-	done := make(chan bool, m.Rows)
-
-	// Compute each row concurrently
-	for i := 0; i < m.Rows; i++ {
-		semaphore <- struct{}{} // Acquire slot
-		go func(rowIdx int) {
-			defer func() {
-				<-semaphore // Release slot
-				done <- true
-			}()
-
-			var sum int64
-			for j := 0; j < m.Cols; j++ {
-				sum += (m.Data[rowIdx][j] * v.Data[j]) % m.Q
-				sum %= m.Q
-			}
-			result.Data[rowIdx] = sum % m.Q
-		}(i)
-	}
-
-	// Wait for all goroutines to complete
-	for i := 0; i < m.Rows; i++ {
-		<-done
-	}
-
+	m.mulConcurrentInto(v, result)
 	return result
 }
 
 // mulConcurrentInto performs concurrent matrix-vector multiplication into dst
 func (m *Matrix) mulConcurrentInto(v *Vector, dst *Vector) {
-	// Use configured max workers
+	if m.Rows == 0 {
+		return
+	}
 	maxWorkers := MaxWorkers
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
 	if m.Rows < maxWorkers {
 		maxWorkers = m.Rows
 	}
-
-	// Channel to limit concurrent goroutines
-	semaphore := make(chan struct{}, maxWorkers)
-	done := make(chan bool, m.Rows)
-
-	// Compute each row concurrently
-	for i := 0; i < m.Rows; i++ {
-		semaphore <- struct{}{} // Acquire slot
-		go func(rowIdx int) {
-			defer func() {
-				<-semaphore // Release slot
-				done <- true
-			}()
-
-			var sum int64
-			for j := 0; j < m.Cols; j++ {
-				sum += m.Data[rowIdx][j] * v.Data[j]
+	chunk := rowChunkSize
+	if chunk < 1 {
+		chunk = 1
+	}
+	type job struct {
+		start int
+		end   int
+	}
+	jobs := make(chan job, maxWorkers)
+	var wg sync.WaitGroup
+	worker := func() {
+		defer wg.Done()
+		for task := range jobs {
+			for i := task.start; i < task.end; i++ {
+				var sum int64
+				row := m.Data[i]
+				for j := 0; j < m.Cols; j++ {
+					sum += row[j] * v.Data[j]
+				}
+				dst.Data[i] = sum % m.Q
 			}
-			dst.Data[rowIdx] = sum % m.Q
-		}(i)
+		}
 	}
-
-	// Wait for all goroutines to complete
-	for i := 0; i < m.Rows; i++ {
-		<-done
+	for w := 0; w < maxWorkers; w++ {
+		wg.Add(1)
+		go worker()
 	}
+	for start := 0; start < m.Rows; start += chunk {
+		end := start + chunk
+		if end > m.Rows {
+			end = m.Rows
+		}
+		jobs <- job{start: start, end: end}
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // Add performs vector addition modulo q

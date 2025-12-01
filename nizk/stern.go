@@ -145,29 +145,32 @@ func applyPermutation(v *lattice.Vector, perm []int) *lattice.Vector {
 }
 
 // generateRandomPermutation generates a random permutation of [0, 1, ..., n-1]
-func generateRandomPermutation(n int) ([]int, error) {
-	perm := make([]int, n)
-	for i := 0; i < n; i++ {
-		perm[i] = i
+func fillRandomPermutation(buf []int) error {
+	for i := 0; i < len(buf); i++ {
+		buf[i] = i
 	}
+	return shufflePermutation(buf)
+}
 
-	// Fisher-Yates shuffle - optimized version using crypto/rand
-	// For large n (e.g., NK=12288 for lambda=256), calling RandomVector n times is too slow
-	// Instead, generate random bytes in batches
+func shufflePermutation(buf []int) error {
 	randBuf := make([]byte, 8)
-	for i := n - 1; i > 0; i-- {
-		// Generate random j in [0, i]
+	for i := len(buf) - 1; i > 0; i-- {
 		_, err := rand.Read(randBuf)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		randVal := binary.BigEndian.Uint64(randBuf)
 		j := int(randVal % uint64(i+1))
-
-		// Swap
-		perm[i], perm[j] = perm[j], perm[i]
+		buf[i], buf[j] = buf[j], buf[i]
 	}
+	return nil
+}
 
+func generateRandomPermutation(n int) ([]int, error) {
+	perm := make([]int, n)
+	if err := fillRandomPermutation(perm); err != nil {
+		return nil, err
+	}
 	return perm, nil
 }
 
