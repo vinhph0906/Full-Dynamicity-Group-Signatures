@@ -50,14 +50,29 @@ type TracingSecretKey struct {
 	// TODO: Remove this legacy field once signature.go and trace.go are updated
 	SK *lattice.Vector // Legacy: for backward compatibility
 	// Second encryption secrets for stronger tracing proof
-	S2 *lattice.Matrix // S₂ ∈ Z_q^{n×ℓ}
-	E2 *lattice.Matrix // E₂ ∈ Z_q^{ℓ×m_E}
+	S2          *lattice.Matrix // S₂ ∈ Z_q^{n×ℓ}
+	E2          *lattice.Matrix // E₂ ∈ Z_q^{ℓ×m_E}
+	s1Transpose *lattice.Matrix
 }
 
 // GetSecretMatrices provides access to secret matrices needed by π_trace prover
 // Implements the nizk.TracingSecretKeyInterface without importing nizk to avoid cycles
 func (tsk *TracingSecretKey) GetSecretMatrices() (S1, S2 *lattice.Matrix) {
 	return tsk.S1, tsk.S2
+}
+
+func (tsk *TracingSecretKey) ensureS1Transpose() *lattice.Matrix {
+	if tsk == nil {
+		return nil
+	}
+	if tsk.s1Transpose != nil {
+		return tsk.s1Transpose
+	}
+	if tsk.S1 == nil {
+		return nil
+	}
+	tsk.s1Transpose = tsk.S1.Transpose()
+	return tsk.s1Transpose
 }
 
 // UserPublicKey is a user's public key
@@ -172,11 +187,12 @@ func GKgenTM(pp *lattice.PublicParameters) (*TracingPublicKey, *TracingSecretKey
 
 	// tsk = (S₁, E₁), tpk = (B, P₁, P₂)
 	tsk := &TracingSecretKey{
-		S1: S1,
-		E1: E1,
-		S2: S2,
-		E2: E2,
-		SK: lattice.NewVector(pp.M_E, pp.Q), // Legacy field - TODO: update signature.go
+		S1:          S1,
+		E1:          E1,
+		S2:          S2,
+		E2:          E2,
+		SK:          lattice.NewVector(pp.M_E, pp.Q), // Legacy field - TODO: update signature.go
+		s1Transpose: S1T,
 	}
 	tpk := &TracingPublicKey{
 		B:   B,

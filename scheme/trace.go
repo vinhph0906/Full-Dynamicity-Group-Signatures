@@ -27,11 +27,11 @@ func Trace(gpk *GroupPublicKey, tsk *TracingSecretKey, info *GroupInfo,
 	// 	return -1, nil, fmt.Errorf("cannot trace invalid signature: %v", err)
 	// }
 
-	// 1. Decrypt the ciphertext to recover the identity
-	uid, err := decryptIdentity(gpk, tsk, sig.Ciphertext)
+	noisyMsg, err := computeNoisyMessage(tsk, sig.Ciphertext, gpk.PP)
 	if err != nil {
 		return -1, nil, fmt.Errorf("failed to decrypt identity: %v", err)
 	}
+	uid := decodeUIDFromNoisy(noisyMsg, gpk.PP)
 
 	// 2. Verify that the UID is in the registration table
 	record, exists := reg.Records[uid]
@@ -45,10 +45,9 @@ func Trace(gpk *GroupPublicKey, tsk *TracingSecretKey, info *GroupInfo,
 		return -1, nil, fmt.Errorf("UID %d was not active at epoch %d", uid, sig.Epoch)
 	}
 
-	// 4. Generate proof of correct tracing
-	proof, err := generateTraceProof(gpk, tsk, sig.Ciphertext, uid)
-	if err != nil {
-		return -1, nil, fmt.Errorf("failed to generate trace proof: %v", err)
+	proof := &TraceProof{
+		UID:   uid,
+		Proof: noisyMsg,
 	}
 
 	// Include the public key in the proof
@@ -74,7 +73,7 @@ func Judge(gpk *GroupPublicKey, uid int, info *GroupInfo, proof *TraceProof, sig
 	// }
 
 	// 3. Check proof binds to this ciphertext
-	if proof.SigHash == nil || len(proof.SigHash) == 0 {
+	if len(proof.SigHash) == 0 {
 		return false
 	}
 	if !equalBytes(proof.SigHash, hashCiphertext(sig.Ciphertext)) {
@@ -90,76 +89,53 @@ func Judge(gpk *GroupPublicKey, uid int, info *GroupInfo, proof *TraceProof, sig
 // Compute: bin(j) = ⌊(c_{1,2} - S₁^T · c_{1,1}) / (q/2)⌉
 // Where: c_{1,2} - S₁^T · c_{1,1} = E₁·r₁ + ⌈q/2⌉·bin(j) (small noise + message)
 func decryptIdentity(gpk *GroupPublicKey, tsk *TracingSecretKey, ct *Ciphertext) (int, error) {
-	params := gpk.PP
-
-	// Paper decryption: m = c_{1,2} - S₁^T · c_{1,1}
-	// Where:
-	//   c_{1,1} = B·r₁ (n-dimensional)
-	//   c_{1,2} = P₁·r₁ + ⌈q/2⌉·bin(j) (ℓ-dimensional)
-	//   P₁ = S₁^T·B + E₁
-	// So: c_{1,2} - S₁^T·c_{1,1} = E₁·r₁ + ⌈q/2⌉·bin(j)
-
-	// Step 1: Compute S₁^T · c_{1,1}
-	// S₁ is n×ℓ, so S₁^T is ℓ×n
-	// c_{1,1} is n-dimensional
-	// Result: S₁^T · c_{1,1} is ℓ-dimensional
-	S1_T := tsk.S1.Transpose()
-	S1T_times_c11 := S1_T.Mul(ct.C1_U)
-
-	// Step 2: Compute noisy message: c_{1,2} - S₁^T·c_{1,1}
-	noisyMsg := lattice.NewVector(ct.C1_V.Size, params.Q)
-	for i := 0; i < ct.C1_V.Size && i < S1T_times_c11.Size; i++ {
-		diff := ct.C1_V.Data[i] - S1T_times_c11.Data[i]
-		noisyMsg.Data[i] = diff % params.Q
-		if noisyMsg.Data[i] < 0 {
-			noisyMsg.Data[i] += params.Q
-		}
+	noisyMsg, err := computeNoisyMessage(tsk, ct, gpk.PP)
+	if err != nil {
+		return -1, err
 	}
-
-	// Step 3: Decode UID bits using threshold decoding
-	// Each component should be either ≈0 or ≈q/2
-	uid := 0
-	halfQ := params.Q / 2
-	quarterQ := params.Q / 4
-
-	for i := 0; i < params.L && i < noisyMsg.Size; i++ {
-		val := noisyMsg.Data[i]
-
-		// Normalize to [0, q)
-		val = val % params.Q
-		if val < 0 {
-			val += params.Q
-		}
-
-		// Threshold decoding around q/2:
-		// - If val is close to 0 (< q/4): bit = 0
-		// - If val is close to q/2 (between q/4 and 3q/4): bit = 1
-		// - If val is close to q (> 3q/4): bit = 0 (wraparound)
-		bit := 0
-		threeQuarterQ := halfQ + quarterQ
-		if val >= quarterQ && val < threeQuarterQ {
-			bit = 1
-		}
-
-		uid |= bit << i
-	}
-
-	return uid, nil
+	return decodeUIDFromNoisy(noisyMsg, gpk.PP), nil
 }
 
 // generateTraceProof generates a proof that the tracing was done correctly
 // Paper: TM proves correct decryption of c₁ using tsk = (S₁, E₁)
 func generateTraceProof(gpk *GroupPublicKey, tsk *TracingSecretKey,
 	ct *Ciphertext, uid int) (*TraceProof, error) {
+	noisyMsg, err := computeNoisyMessage(tsk, ct, gpk.PP)
+	if err != nil {
+		return nil, err
+	}
+	return &TraceProof{
+		UID:   uid,
+		Proof: noisyMsg,
+	}, nil
+}
+
+// verifyTraceProof verifies the tracing proof
+// Verifies that TM correctly decrypted the ciphertext to obtain the claimed UID
+func verifyTraceProof(gpk *GroupPublicKey, proof *TraceProof) bool {
+	if proof.Proof == nil {
+		return false
+	}
 
 	params := gpk.PP
+	uid := decodeUIDFromNoisy(proof.Proof, params)
+	return uid == proof.UID
+}
 
-	// Generate proof by re-computing the decryption
-	// Proof consists of the noisy message: c_{1,2} - S₁^T·c_{1,1}
-	S1_T := tsk.S1.Transpose()
+func computeNoisyMessage(tsk *TracingSecretKey, ct *Ciphertext, params *lattice.PublicParameters) (*lattice.Vector, error) {
+	if tsk == nil || ct == nil || params == nil {
+		return nil, fmt.Errorf("missing tracing inputs")
+	}
+	if ct.C1_U == nil || ct.C1_V == nil {
+		return nil, fmt.Errorf("incomplete ciphertext")
+	}
+
+	S1_T := tsk.ensureS1Transpose()
+	if S1_T == nil {
+		return nil, fmt.Errorf("tracing secret missing S1 transpose")
+	}
+
 	S1T_times_c11 := S1_T.Mul(ct.C1_U)
-
-	// Compute noisy message as proof
 	noisyMsg := lattice.NewVector(ct.C1_V.Size, params.Q)
 	for i := 0; i < ct.C1_V.Size && i < S1T_times_c11.Size; i++ {
 		diff := ct.C1_V.Data[i] - S1T_times_c11.Data[i]
@@ -169,42 +145,26 @@ func generateTraceProof(gpk *GroupPublicKey, tsk *TracingSecretKey,
 		}
 	}
 
-	return &TraceProof{
-		UID:   uid,
-		Proof: noisyMsg, // Proof = decrypted noisy message
-	}, nil
+	return noisyMsg, nil
 }
 
-// verifyTraceProof verifies the tracing proof
-// Verifies that TM correctly decrypted the ciphertext to obtain the claimed UID
-func verifyTraceProof(gpk *GroupPublicKey, proof *TraceProof) bool {
-	params := gpk.PP
-
-	if proof.Proof == nil {
-		return false
+func decodeUIDFromNoisy(noisyMsg *lattice.Vector, params *lattice.PublicParameters) int {
+	if noisyMsg == nil || params == nil {
+		return -1
 	}
-
-	// The proof contains the noisy message: E₁·r₁ + ⌈q/2⌉·bin(j)
-	// Decode it to verify the claimed UID
-	noisyMsg := proof.Proof
-
-	// Decode UID from noisy message
 	uid := 0
 	halfQ := params.Q / 2
 	quarterQ := params.Q / 4
+	threeQuarterQ := halfQ + quarterQ
 
 	for i := 0; i < params.L && i < noisyMsg.Size; i++ {
 		val := noisyMsg.Data[i]
-
-		// Normalize to [0, q)
 		val = val % params.Q
 		if val < 0 {
 			val += params.Q
 		}
 
-		// Threshold decoding around q/2
 		bit := 0
-		threeQuarterQ := halfQ + quarterQ
 		if val >= quarterQ && val < threeQuarterQ {
 			bit = 1
 		}
@@ -212,8 +172,7 @@ func verifyTraceProof(gpk *GroupPublicKey, proof *TraceProof) bool {
 		uid |= bit << i
 	}
 
-	// Verify the decoded UID matches the claimed UID
-	return uid == proof.UID
+	return uid
 }
 
 // Helpers
