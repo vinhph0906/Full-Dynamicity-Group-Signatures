@@ -7,7 +7,7 @@ set -e
 setopt null_glob
 
 # Configuration
-LAMBDAS=(32 64 128 256 512)  # Security parameters
+LAMBDAS=(256 512)  # Security parameters
 MAX_USERS=(128 256 512 1024 2048)  # 2^8, 2^10, 2^12, 2^14, 2^16
 ITERATIONS=1
 RESULTS_FILE="experiment_results.txt"
@@ -85,9 +85,9 @@ run_experiment() {
     local start=$(gdate +%s.%N)
     if [[ $VERBOSE -eq 1 ]]; then
         echo "  -> Running: gm setup --lambda=$lambda --max-users=$max_users $gpu_flags"
-        "$BINARY" gm setup --lambda="$lambda" --max-users="$max_users" $gpu_flags
+        "$BINARY" gm setup --lambda="$lambda" --max-users="$max_users" ${=gpu_flags}
     else
-        "$BINARY" gm setup --lambda="$lambda" --max-users="$max_users" $gpu_flags > /dev/null 2>&1
+        "$BINARY" gm setup --lambda="$lambda" --max-users="$max_users" ${=gpu_flags} > /dev/null 2>&1
     fi
     local end=$(gdate +%s.%N)
     setup_time=$(echo "$end - $start" | bc)
@@ -128,10 +128,10 @@ run_experiment() {
     local sign_output=""
     if [[ $VERBOSE -eq 1 ]]; then
         echo "  -> Running: member sign 0 'Test message for experiment' $gpu_flags"
-        sign_output=$("$BINARY" member sign 0 "Test message for experiment" $gpu_flags 2>&1)
+        sign_output=$("$BINARY" member sign 0 "Test message for experiment" ${=gpu_flags} 2>&1)
         echo "$sign_output"
     else
-        sign_output=$("$BINARY" member sign 0 "Test message for experiment" $gpu_flags 2>&1)
+        sign_output=$("$BINARY" member sign 0 "Test message for experiment" ${=gpu_flags} 2>&1)
     fi
     end=$(gdate +%s.%N)
     sign_time=$(echo "$end - $start" | bc)
@@ -161,9 +161,9 @@ run_experiment() {
         start=$(gdate +%s.%N)
         if [[ $VERBOSE -eq 1 ]]; then
             echo "  -> Running: verifier verify $sig_id $gpu_flags"
-            "$BINARY" verifier verify "$sig_id" $gpu_flags
+            "$BINARY" verifier verify "$sig_id" ${=gpu_flags}
         else
-            "$BINARY" verifier verify "$sig_id" $gpu_flags > /dev/null 2>&1
+            "$BINARY" verifier verify "$sig_id" ${=gpu_flags} > /dev/null 2>&1
         fi
         end=$(gdate +%s.%N)
         verify_time=$(echo "$end - $start" | bc)
@@ -174,9 +174,9 @@ run_experiment() {
         start=$(gdate +%s.%N)
         if [[ $VERBOSE -eq 1 ]]; then
             echo "  -> Running: tm trace $sig_id $gpu_flags"
-            "$BINARY" tm trace "$sig_id" $gpu_flags
+            "$BINARY" tm trace "$sig_id" ${=gpu_flags}
         else
-            "$BINARY" tm trace "$sig_id" $gpu_flags > /dev/null 2>&1
+            "$BINARY" tm trace "$sig_id" ${=gpu_flags} > /dev/null 2>&1
         fi
         end=$(gdate +%s.%N)
         trace_time=$(echo "$end - $start" | bc)
