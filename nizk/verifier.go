@@ -11,14 +11,14 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// VerifierFull implements the full Stern protocol verification
+// Verify implements the full Stern protocol verification
 // Following Section 4.2 of the paper
 //
 // Verification checks for each challenge type:
 // - Ch=1: Check Γ_η(z) ∈ VALID and commitment consistency
 // - Ch=2: Check M·(z+r_z) = M·r_z + u and commitment consistency
 // - Ch=3: Check M·r_z matches committed value and commitment consistency
-func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Vector) error {
+func Verify(proof *ZKProof, statement *Statement, expectedRoot *lattice.Vector) error {
 	params := statement.Params
 
 	if params == nil {
@@ -58,7 +58,7 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 	if statement != nil {
 		statement.MerkleRoot = expectedRoot
 	}
-	transcript := buildFullTranscript(statement, proof.Commitments)
+	transcript := buildTranscript(statement, proof.Commitments)
 	// Debug: print short digest of transcript to ensure prover/verifier alignment
 	if Debug {
 		shake := sha3.NewShake256()
@@ -211,7 +211,7 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 				return fmt.Errorf("round %d: failed to reconstruct witness for z2", round)
 			}
 
-			gammaZ2 := applyFullPermutation(witnessZ2, eta)
+			gammaZ2 := applyPermutation(witnessZ2, eta)
 			if !vectorsEqualMod(commitGammaVerifier(gammaZ2, rho3Resp, params), stored.C3, params.Q) {
 				return fmt.Errorf("round %d: commitment C3 mismatch", round)
 			}
@@ -279,7 +279,7 @@ func VerifierFull(proof *ZKProof, statement *Statement, expectedRoot *lattice.Ve
 				return fmt.Errorf("round %d: failed to reconstruct witness for r_z", round)
 			}
 
-			gammaRz := applyFullPermutation(witnessRz, eta)
+			gammaRz := applyPermutation(witnessRz, eta)
 			if !vectorsEqualMod(commitGammaVerifier(gammaRz, rho2Resp, params), stored.C2, params.Q) {
 				return fmt.Errorf("round %d: commitment C2 mismatch", round)
 			}

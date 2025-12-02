@@ -92,12 +92,12 @@ func Sign(gpk *GroupPublicKey, gsk *GroupSigningKey, info *GroupInfo, message []
 	}
 
 	tProof := time.Now()
-	proof, err := nizk.ProverFull(witness, statement)
+	proof, err := nizk.Prove(witness, statement)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate ZK proof: %v", err)
+		return nil, fmt.Errorf("proof generation failed: %v", err)
 	}
 	if prof {
-		fmt.Fprintf(os.Stderr, "[profile] ProverFull: %v\n", time.Since(tProof))
+		fmt.Fprintf(os.Stderr, "[profile] Prove: %v\n", time.Since(tProof))
 	}
 	if prof {
 		fmt.Fprintf(os.Stderr, "[profile] Sign total: %v\n", time.Since(tAll))
@@ -153,7 +153,7 @@ func Verify(gpk *GroupPublicKey, info *GroupInfo, sig *Signature) error {
 		TPK:        gpk.TPK, // Add tracing public key for LWE verification
 	}
 
-	return nizk.VerifierFull(sig.Proof, statement, expectedRoot)
+	return nizk.Verify(sig.Proof, statement, expectedRoot)
 }
 
 // validateCiphertext checks ciphertext components are non-zero and well-formed

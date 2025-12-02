@@ -16,8 +16,8 @@ import (
 
 // bigIntToFixedBytes moved to util.go
 
-// ProverFull implements the full Stern protocol with permutations
-// Following Section 4.2 of the paper: Full NIZKAoK construction
+// Prove implements the Stern protocol with permutations
+// Following Section 4.2 of the paper: NIZKAoK construction
 //
 // Protocol Overview:
 // 1. Build unified equation M·z = u (mod q)
@@ -31,7 +31,7 @@ import (
 //   - Ch=1: Reveal Γ_η(z), Γ_η(r_z) to check structure
 //   - Ch=2: Reveal η, z+r_z to check equation M·(z+r_z) = M·r_z + u
 //   - Ch=3: Reveal η, r_z to check equation M·r_z
-func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
+func Prove(witness *Witness, statement *Statement) (*ZKProof, error) {
 	params := statement.Params
 	prof := os.Getenv("NIZK_PROFILE") == "1"
 	tStart := time.Now()
@@ -56,7 +56,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 
 	// Step 1: Prepare extended witness
 	if prof {
-		fmt.Printf("[ProverFull] Step 1: Preparing extended witness...\n")
+		fmt.Printf("[Prove] Step 1: Preparing extended witness...\n")
 	}
 	t1 := time.Now()
 	sternWitness, err := prepareExtendedWitness(witness, params)
@@ -64,12 +64,12 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 		return nil, fmt.Errorf("failed to prepare extended witness: %v", err)
 	}
 	if prof {
-		fmt.Printf("[ProverFull] Step 1 completed in %v\n", time.Since(t1))
+		fmt.Printf("[Prove] Step 1 completed in %v\n", time.Since(t1))
 	}
 
 	// Step 2: Build unified equation M·z = u (mod q)
 	if prof {
-		fmt.Printf("[ProverFull] Step 2: Building unified equation M·z = u...\n")
+		fmt.Printf("[Prove] Step 2: Building unified equation M·z = u...\n")
 	}
 	t2 := time.Now()
 	equation, err := buildUnifiedEquation(sternWitness, statement, params)
@@ -77,7 +77,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 		return nil, fmt.Errorf("failed to build unified equation: %v", err)
 	}
 	if prof {
-		fmt.Printf("[ProverFull] Step 2 completed in %v (M: %dx%d, witness_size: %d)\n",
+		fmt.Printf("[Prove] Step 2 completed in %v (M: %dx%d, witness_size: %d)\n",
 			time.Since(t2), equation.M.Rows, equation.M.Cols, equation.Z.Size)
 	}
 
@@ -152,7 +152,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 			}
 			tRound := time.Now()
 			if prof && round%5 == 0 {
-				fmt.Printf("[ProverFull] Commitment round %d/%d [%s]...\n",
+				fmt.Printf("[Prove] Commitment round %d/%d [%s]...\n",
 					round+1, params.Kappa, time.Now().Format("15:04:05"))
 				printMemStats(fmt.Sprintf("Round %d", round+1))
 			}
@@ -168,7 +168,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 			}
 
 			tPerm := time.Now()
-			eta, err := generateFullPermutation(sternWitness, params)
+			eta, err := generatePermutation(sternWitness, params)
 			if err != nil {
 				releaseMaskVector(rz)
 				recordWorkerError(&abort, errCh, fmt.Errorf("failed to sample permutation: %w", err))
@@ -216,10 +216,10 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 				recordWorkerError(&abort, errCh, fmt.Errorf("failed to map mask to witness structure"))
 				return
 			}
-			gammaRz := applyFullPermutation(maskWitness, eta)
+			gammaRz := applyPermutation(maskWitness, eta)
 			c2 := commitGamma(gammaRz, rho2, params)
 
-			gammaZ := applyFullPermutation(sternWitness, eta)
+			gammaZ := applyPermutation(sternWitness, eta)
 			gammaZPlusRz := gammaZ.Add(gammaRz)
 			c3 := commitGamma(gammaZPlusRz, rho3, params)
 
@@ -240,7 +240,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 	}
 
 	if prof {
-		fmt.Printf("[ProverFull] Step 3: Commitment phase - κ=%d rounds, witness_size=%d [%s]\n",
+		fmt.Printf("[Prove] Step 3: Commitment phase - κ=%d rounds, witness_size=%d [%s]\n",
 			params.Kappa, equation.Z.Size, time.Now().Format("15:04:05"))
 	}
 	printMemStats("Before commitment phase")
@@ -269,15 +269,15 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 	default:
 	}
 	if prof {
-		fmt.Printf("[ProverFull] Commitment phase completed in %v\n", time.Since(tCommitStart))
+		fmt.Printf("[Prove] Commitment phase completed in %v\n", time.Since(tCommitStart))
 	}
 	printMemStats("After commitment phase")
 
 	// Build Fiat-Shamir transcript after all commitments are available
 	if prof {
-		fmt.Printf("[ProverFull] Building Fiat-Shamir transcript...\n")
+		fmt.Printf("[Prove] Building Fiat-Shamir transcript...\n")
 	}
-	transcript := buildFullTranscript(statement, proof.Commitments)
+	transcript := buildTranscript(statement, proof.Commitments)
 
 	// Debug: print short digest of transcript to ensure prover/verifier alignment
 	if Debug {
@@ -291,7 +291,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 	// Step 4: Challenge phase via Fiat-Shamir
 	// CH = H_FS(M, {CMT_i}, public_inputs) ∈ {1,2,3}^κ
 	if prof {
-		fmt.Printf("[ProverFull] Computing Fiat-Shamir challenges...\n")
+		fmt.Printf("[Prove] Computing Fiat-Shamir challenges...\n")
 	}
 	challenges := lattice.FiatShamirHash(transcript, params.Kappa)
 
@@ -299,7 +299,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 
 	// Step 5: Response phase - depends on challenge
 	if prof {
-		fmt.Printf("[ProverFull] Step 5: Response phase - %d rounds [%s]\n",
+		fmt.Printf("[Prove] Step 5: Response phase - %d rounds [%s]\n",
 			params.Kappa, time.Now().Format("15:04:05"))
 	}
 	printMemStats("Before response phase")
@@ -307,7 +307,7 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 	for round := 0; round < params.Kappa; round++ {
 		tRespRound := time.Now()
 		if prof {
-			fmt.Printf("[ProverFull] Response round %d/%d [%s]...\n",
+			fmt.Printf("[Prove] Response round %d/%d [%s]...\n",
 				round+1, params.Kappa, time.Now().Format("15:04:05"))
 		}
 		secret := secrets[round]
@@ -321,8 +321,8 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 
 		switch challenges[round] {
 		case 1:
-			tz := applyFullPermutation(sternWitness, eta)
-			tr := applyFullPermutation(createWitnessViewFromVector(rz, sternWitness), eta)
+			tz := applyPermutation(sternWitness, eta)
+			tr := applyPermutation(createWitnessViewFromVector(rz, sternWitness), eta)
 			response = packResponse1(tz, tr, rho2, rho3, params)
 
 		case 2:
@@ -346,8 +346,8 @@ func ProverFull(witness *Witness, statement *Statement) (*ZKProof, error) {
 		}
 	}
 	if prof {
-		fmt.Printf("[ProverFull] Response phase completed in %v\n", time.Since(tResponseStart))
-		fmt.Printf("[ProverFull] === TOTAL PROOF GENERATION TIME: %v ===\n", time.Since(tStart))
+		fmt.Printf("[Prove] Response phase completed in %v\n", time.Since(tResponseStart))
+		fmt.Printf("[Prove] === TOTAL PROOF GENERATION TIME: %v ===\n", time.Since(tStart))
 	}
 	printMemStats("End")
 

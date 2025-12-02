@@ -130,9 +130,9 @@ func extendP(p *lattice.Vector, q int64) *lattice.Vector {
 	return result
 }
 
-// applyPermutation applies permutation π to vector v
+// applyVectorPermutation applies permutation π to vector v
 // Returns π(v) where π(v)[i] = v[π[i]]
-func applyPermutation(v *lattice.Vector, perm []int) *lattice.Vector {
+func applyVectorPermutation(v *lattice.Vector, perm []int) *lattice.Vector {
 	result := lattice.NewVector(v.Size, v.Q)
 
 	for i := 0; i < len(perm) && i < v.Size; i++ {
@@ -176,7 +176,7 @@ func generateRandomPermutation(n int) ([]int, error) {
 
 // Γ_η applies the full permutation η to witness z
 // This is the core of Stern protocol: Γ_η(z) ∈ VALID
-func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vector {
+func applyPermutation(witness *SternWitness, perm *Permutation) *lattice.Vector {
 	// Apply permutation η to all components of witness
 	// Paper: Γ_η(z) permutes each component of the witness vector
 	// Result is a single vector with all permuted components concatenated
@@ -225,7 +225,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 
 	// Apply permutation Bx to x*
 	if witness.XExt != nil && perm.Bx != nil && len(perm.Bx) == witness.XExt.Size {
-		permuted := applyPermutation(witness.XExt, perm.Bx)
+		permuted := applyVectorPermutation(witness.XExt, perm.Bx)
 		for i := 0; i < permuted.Size; i++ {
 			result.Data[offset+i] = permuted.Data[i]
 		}
@@ -240,7 +240,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 
 	// Apply permutation Bp to p*
 	if witness.PExt != nil && perm.Bp != nil && len(perm.Bp) == witness.PExt.Size {
-		permuted := applyPermutation(witness.PExt, perm.Bp)
+		permuted := applyVectorPermutation(witness.PExt, perm.Bp)
 		for i := 0; i < permuted.Size; i++ {
 			result.Data[offset+i] = permuted.Data[i]
 		}
@@ -263,7 +263,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 	// Apply permutations Bj[i] to each j*_i
 	for i, jext := range witness.JExt {
 		if jext != nil && perm.Bj != nil && i < len(perm.Bj) && len(perm.Bj[i]) == jext.Size {
-			permuted := applyPermutation(jext, perm.Bj[i])
+			permuted := applyVectorPermutation(jext, perm.Bj[i])
 			for j := 0; j < permuted.Size; j++ {
 				result.Data[offset+j] = permuted.Data[j]
 			}
@@ -282,7 +282,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 		// v*_i
 		vext := witness.VExt[i]
 		if vext != nil && perm.Bv != nil && i < len(perm.Bv) && len(perm.Bv[i]) == vext.Size {
-			permuted := applyPermutation(vext, perm.Bv[i])
+			permuted := applyVectorPermutation(vext, perm.Bv[i])
 			for j := 0; j < permuted.Size; j++ {
 				result.Data[offset+j] = permuted.Data[j]
 			}
@@ -298,7 +298,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 		if i < len(witness.VHatExt) {
 			vhat := witness.VHatExt[i]
 			if vhat != nil && perm.BvHat != nil && i < len(perm.BvHat) && len(perm.BvHat[i]) == vhat.Size {
-				permuted := applyPermutation(vhat, perm.BvHat[i])
+				permuted := applyVectorPermutation(vhat, perm.BvHat[i])
 				for j := 0; j < permuted.Size; j++ {
 					result.Data[offset+j] = permuted.Data[j]
 				}
@@ -315,7 +315,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 		if i < len(witness.WHatExt) {
 			what := witness.WHatExt[i]
 			if what != nil && perm.BwHat != nil && i < len(perm.BwHat) && len(perm.BwHat[i]) == what.Size {
-				permuted := applyPermutation(what, perm.BwHat[i])
+				permuted := applyVectorPermutation(what, perm.BwHat[i])
 				for j := 0; j < permuted.Size; j++ {
 					result.Data[offset+j] = permuted.Data[j]
 				}
@@ -333,7 +333,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 	if numVLevels < len(witness.WHatExt) {
 		what := witness.WHatExt[numVLevels]
 		if what != nil && perm.BwHat != nil && numVLevels < len(perm.BwHat) && len(perm.BwHat[numVLevels]) == what.Size {
-			permuted := applyPermutation(what, perm.BwHat[numVLevels])
+			permuted := applyVectorPermutation(what, perm.BwHat[numVLevels])
 			for j := 0; j < permuted.Size; j++ {
 				result.Data[offset+j] = permuted.Data[j]
 			}
@@ -348,7 +348,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 
 	// Apply permutation Br1 to r*_1
 	if witness.R1Ext != nil && perm.Br1 != nil && len(perm.Br1) == witness.R1Ext.Size {
-		permuted := applyPermutation(witness.R1Ext, perm.Br1)
+		permuted := applyVectorPermutation(witness.R1Ext, perm.Br1)
 		for i := 0; i < permuted.Size; i++ {
 			result.Data[offset+i] = permuted.Data[i]
 		}
@@ -362,7 +362,7 @@ func applyFullPermutation(witness *SternWitness, perm *Permutation) *lattice.Vec
 
 	// Apply permutation Br2 to r*_2
 	if witness.R2Ext != nil && perm.Br2 != nil && len(perm.Br2) == witness.R2Ext.Size {
-		permuted := applyPermutation(witness.R2Ext, perm.Br2)
+		permuted := applyVectorPermutation(witness.R2Ext, perm.Br2)
 		for i := 0; i < permuted.Size; i++ {
 			result.Data[offset+i] = permuted.Data[i]
 		}

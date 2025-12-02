@@ -9,8 +9,8 @@ import (
 
 var permutationPool = sync.Pool{New: func() any { return &Permutation{} }}
 
-// generateFullPermutation samples all block permutations used in Γ_η.
-func generateFullPermutation(sw *SternWitness, params *lattice.PublicParameters) (*Permutation, error) {
+// generatePermutation samples all block permutations used in Γ_η.
+func generatePermutation(sw *SternWitness, params *lattice.PublicParameters) (*Permutation, error) {
 	perm := permutationPool.Get().(*Permutation)
 	if err := populatePermutation(perm, sw, params); err != nil {
 		releasePermutation(perm)
